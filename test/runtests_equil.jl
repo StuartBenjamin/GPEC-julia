@@ -1,3 +1,5 @@
+using Statistics
+
 
 @testset "Equilibrium Unit Tests" begin
 
@@ -145,6 +147,96 @@
         @test !haskey(ffs_table, "reform_eq_with_psilim")
         @test GeneralizedPerturbedEquilibrium.ForceFreeStates.ForceFreeStatesControl(;
             (Symbol(k) => v for (k, v) in ffs_table)...) isa GeneralizedPerturbedEquilibrium.ForceFreeStates.ForceFreeStatesControl
+    end
+
+    @testset "F and P from file derivatives" begin
+        Eq = GeneralizedPerturbedEquilibrium.Equilibrium
+        # Smooth profiles with exact derivatives; F varies by ~2 % like a tokamak F
+        xs = range(0.0, 1.0; length=257)
+        f_exact = @. sqrt(9.0 + 0.4 * (1 - xs)^2 - 0.1 * (1 - xs)^3)
+        ffprime = @. -0.4 * (1 - xs) + 0.15 * (1 - xs)^2
+        f2_exact = @. (ffprime^2 / f_exact^2 * -1 + 0.4 - 0.3 * (1 - xs)) / f_exact   # d²F/dx²
+        p_exact = @. 5e4 * (1 - xs)^2 + 300.0
+        pprime = @. -1e5 * (1 - xs)
+        f_single = Float64.(Float32.(f_exact))   # a table written in single precision
+
+        built = Eq.integrate_profile_derivatives(xs, f_single, p_exact, ffprime, pprime)
+        @test maximum(abs.(built.f .- f_exact) ./ f_exact) < 1e-7   # boundary anchor carries the rounding
+        @test maximum(abs.(built.p .- p_exact)) < 1e-6 * 5e4
+        @test built.f_mismatch < 1e-6 && built.p_mismatch < 1e-9
+
+        # The slope of F′ is what single-precision rounding ruins and the derivative route keeps
+        slope_error(f) = maximum(abs.(deriv2(cubic_interp(collect(xs), f)).(xs[20:end-20]) .- f2_exact[20:end-20]))
+        @test slope_error(built.f) < 1e-2 * slope_error(f_single)
+
+        # Either sign convention of the flux derivative gives the same profiles
+        flipped = Eq.integrate_profile_derivatives(xs, f_single, p_exact, -ffprime, -pprime)
+        @test flipped.f ≈ built.f && flipped.p ≈ built.p
+        @test Eq.integrate_profile_derivatives(xs, -f_single, p_exact, ffprime, pprime).f ≈ built.f
+
+        # Unusable derivatives: absent, non-finite, or signs that suit only one of the two profiles
+        @test Eq.integrate_profile_derivatives(xs, f_single, p_exact, zero(ffprime), zero(pprime)) === nothing
+        @test Eq.integrate_profile_derivatives(xs, f_single, p_exact, ffprime, zero(pprime)) === nothing
+        @test Eq.integrate_profile_derivatives(xs, f_single, p_exact, fill(NaN, 257), pprime) === nothing
+        @test Eq.integrate_profile_derivatives(xs, f_single, p_exact, ffprime, -pprime) === nothing
+
+        derivs = Eq.EquilibriumConfig(; profile_source="derivatives")
+        values = Eq.EquilibriumConfig(; profile_source="values")
+        @test_throws ErrorException Eq.EquilibriumConfig(; profile_source="spline")
+        @test Eq.file_profiles(values, xs, -f_single, p_exact, ffprime, pprime) == (f_single, p_exact)
+        @test (@test_logs (:warn, r"absent or unusable") Eq.file_profiles(derivs, xs, f_single, p_exact, zero(ffprime), zero(pprime))) == (f_single, p_exact)
+        @test (@test_logs (:info, r"integrated from") Eq.file_profiles(derivs, xs, f_single, p_exact, ffprime, pprime))[1] ≈ built.f
+        # A pressure table 20 % off its own derivative is reported, not silently accepted
+        @test_logs (:warn, r"disagree") Eq.file_profiles(derivs, xs, f_single, p_exact, ffprime, 1.2 .* pprime)
+
+        # The g-file reader keeps the boundary values and moves the interior only at the rounding level
+        gfile = joinpath(@__DIR__, "..", "examples", "DIIID-like_ideal_example", "TkMkr_D3Dlike_Hmode.geqdsk")
+        table(source) = Eq.read_efit(Eq.EquilibriumConfig(; eq_type="efit", eq_filename=gfile, profile_source=source)).ingest.sq_fs
+        tabulated, integrated = table("values"), table("derivatives")
+        @test integrated[end, 1:2] == tabulated[end, 1:2]
+        @test integrated[:, 1] != tabulated[:, 1]
+        @test maximum(abs.(integrated[:, 1] .- tabulated[:, 1]) ./ tabulated[:, 1]) < 1e-5
+        @test integrated[:, 3:4] == tabulated[:, 3:4]
+    end
+
+    @testset "Load TokaMaker i-file (ldp_i)" begin
+        Eq = GeneralizedPerturbedEquilibrium.Equilibrium
+        # One TokaMaker solve written by save_eqdsk (g65) and save_ifile (i33x65, real*8 and real*4)
+        tk_dir = joinpath(@__DIR__, "test_data", "TokaMaker_ifile")
+        cfg(type, file; kw...) = Eq.EquilibriumConfig(; eq_type=type, eq_filename=joinpath(tk_dir, file), jac_type="hamada",
+            grid_type="ldp", mpsi=64, psilow=0.01, psihigh=0.99, kw...)
+        eq_i = Eq.setup_equilibrium(cfg("ldp_i", "i33x65.ifile"))
+        eq_g = Eq.setup_equilibrium(cfg("efit", "g65.geqdsk"))
+        eq_s = Eq.setup_equilibrium(cfg("ifile", "i33x65_single.ifile"))
+        @test eq_i.ingest isa Eq.InverseIngest
+
+        # Same equilibrium as the g-file of the same solve
+        @test isapprox(eq_i.ro, eq_g.ro; atol=1e-4) && isapprox(eq_i.zo, eq_g.zo; atol=1e-4)
+        @test isapprox(eq_i.psio, eq_g.psio; rtol=1e-6)
+        @test all(isapprox(eq_i.profiles.q_spline(x), eq_g.profiles.q_spline(x); rtol=1e-3) for x in (0.2, 0.5, 0.8))
+
+        # Grad-Shafranov residual on interior surfaces: small, and well below the g-file's
+        gse_median(eq) = (g = Eq.equilibrium_gse!(eq); loc = vec(maximum(g.error; dims=2)); median(loc[0.05 .< g.xs .< 0.7]))
+        @test gse_median(eq_i) < 5e-4
+        @test gse_median(eq_i) < gse_median(eq_g) / 5
+
+        # A real*4 file reads to single-precision agreement
+        @test isapprox(eq_s.ro, eq_i.ro; rtol=1e-6) && isapprox(eq_s.psio, eq_i.psio; rtol=1e-6)
+        @test all(isapprox(eq_s.profiles.q_spline(x), eq_i.profiles.q_spline(x); rtol=1e-6) for x in (0.2, 0.5, 0.8))
+        @test maximum(abs.(eq_s.ingest.R_nodes .- eq_i.ingest.R_nodes)) < 1e-6
+
+        # The FF′ and p′ records feed profile_source = "derivatives"; without them the tabulated F and P are used
+        table(file; kw...) = Eq.read_ldp_i(cfg("ldp_i", file; kw...)).ingest.sq_fs
+        integrated = @test_logs (:info, r"integrated from") match_mode = :any table("i33x65.ifile")
+        tabulated = table("i33x65.ifile"; profile_source="values")
+        @test integrated[end, 1:2] == tabulated[end, 1:2]
+        @test integrated[:, 1] != tabulated[:, 1]
+        @test maximum(abs.(integrated[:, 1] .- tabulated[:, 1]) ./ tabulated[:, 1]) < 1e-4
+        raw = read(joinpath(tk_dir, "i33x65.ifile"))
+        mx = Int(reinterpret(Int32, raw[5:8])[1])
+        stripped = joinpath(mktempdir(), "no_derivatives.ifile")
+        write(stripped, raw[1:end-2*(8mx+8)])
+        @test (@test_logs (:warn, r"absent or unusable") match_mode = :any Eq.read_ldp_i(cfg("ldp_i", stripped)).ingest.sq_fs) == tabulated
     end
 
     @testset "EFIT Method Consistency" begin
