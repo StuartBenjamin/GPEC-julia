@@ -197,7 +197,12 @@ Struct containing input settings for vacuum wall geometry.
         + `"elliptical"`: Elliptical wall
         + `"dee"`: Dee-shaped wall
         + `"mod_dee"`: Modified Dee-shaped wall
-        + `"filepath"`: Custom wall shape from the file you specify
+        + `"filepath"`: Custom wall shape from a file. A relative path resolves against the
+          directory of `gpec.toml`. Format: line 1 `npts`, line 2 `wcentr` (unused), line 3 a
+          header, then `npts` rows of `index R Z` in metres, tracing the closed contour once
+          (a repeated closing point is dropped). Contours with `npts != mtheta` are resampled
+          onto `mtheta` points by periodic splines in arc length, keeping start point and
+          orientation; built-in shapes start at the outboard midplane with `Z = -b sin θ`.
 
     A non-axisymmetric boundary (`nzeta_in > 1`) supports `"nowall"` and `"conformal"`; the others
     are poloidal contours that get revolved and so need `nzeta_in == 1`.
@@ -240,6 +245,18 @@ Struct containing input settings for vacuum wall geometry.
     # Algorithmic options
     equal_arc_wall::Bool = true
 end
+
+# Wall shapes built in to `WallGeometry`; any other `shape` is a file path
+const BUILTIN_WALL_SHAPES = ("nowall", "conformal", "elliptical", "dee", "mod_dee")
+
+"""
+    resolve_wall_shape(shape, base_path) -> String
+
+Return `shape` unchanged for built-in shapes and absolute paths; otherwise join the relative wall
+file path onto `base_path` (the `gpec.toml` directory).
+"""
+resolve_wall_shape(shape::AbstractString, base_path::AbstractString) =
+    shape in BUILTIN_WALL_SHAPES || isabspath(shape) ? String(shape) : normpath(joinpath(base_path, shape))
 
 """
     PlasmaGeometry
@@ -577,20 +594,33 @@ function WallGeometry(inputs::VacuumInput, plasma_surf::PlasmaGeometry, wall_set
             )
         end
 
-        wcentr = 0.0
-        open(wall_settings.shape, "r") do io
-            npots0 = parse(Int, readline(io))  # Number of points in file
-            wcentr = parse(Float64, readline(io))
-            readline(io) # Skip header/comment line
-
-            npots0 < mtheta && error("Wall geometry file $filepath contains fewer points ($npots0) than mtheta ($mtheta).")
-
-            for i in 1:mtheta
-                line = split(readline(io))
-                # Assumes file format: [index  R_coord  Z_coord]
-                x_wall[i] = parse(Float64, line[2])
-                z_wall[i] = parse(Float64, line[3])
+        xs, zs = open(filepath, "r") do io
+            npts = parse(Int, strip(readline(io)))
+            readline(io) # wcentr (unused)
+            readline(io) # header line
+            npts < 3 && error("Wall geometry file $filepath must contain at least 3 points (has $npts).")
+            r_file, z_file = zeros(npts), zeros(npts)
+            for i in 1:npts
+                eof(io) && error("Wall geometry file $filepath ends after $(i - 1) of $npts points.")
+                line = split(readline(io)) # [index  R  Z]
+                r_file[i] = parse(Float64, line[2])
+                z_file[i] = parse(Float64, line[3])
             end
+            return r_file, z_file
+        end
+
+        # Drop a repeated closing point
+        if hypot(xs[end] - xs[1], zs[end] - zs[1]) <= 1e-12 * maximum(abs, xs)
+            pop!(xs)
+            pop!(zs)
+        end
+        length(xs) < 3 && error("Wall geometry file $filepath must contain at least 3 distinct points.")
+
+        if length(xs) == mtheta
+            x_wall, z_wall = xs, zs
+        else
+            @info "Resampling $(length(xs)) wall points from $filepath onto mtheta = $mtheta points."
+            x_wall, z_wall = resample_closed_contour(xs, zs, mtheta)
         end
     end
 
@@ -602,6 +632,15 @@ function WallGeometry(inputs::VacuumInput, plasma_surf::PlasmaGeometry, wall_set
 
     # To add support for x<0 walls, be sure to carefully replicate Chance's fortran code x<0 handling in the kernel function to account for the additional singularities associated with this
     any(x_wall .<= 0.0) && error("Wall R-coordinates contain non-physical values (R <= 0). Check wall geometry.")
+
+    # Clearance: the plasma boundary should lie inside the wall
+    n_outside, min_gap = wall_clearance(x_plasma, z_plasma, x_wall, z_wall)
+    if n_outside > 0
+        @warn "$n_outside of $(length(x_plasma)) plasma boundary points lie outside the wall ($(wall_settings.shape)); " *
+              "check the wall position (e.g. a Z offset). Minimum plasma-wall distance $(@sprintf "%.3e" min_gap) m."
+    else
+        @info "Plasma boundary lies inside the wall; minimum plasma-wall gap $(@sprintf "%.3e" min_gap) m."
+    end
 
     return WallGeometry(false, x_wall, z_wall)
 end

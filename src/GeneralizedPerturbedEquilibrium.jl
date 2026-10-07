@@ -235,7 +235,9 @@ function main_from_inputs(
     end
 
     if "Wall" in keys(inputs)
-        intr.wall_settings = Vacuum.WallShapeSettings(; (Symbol(k) => v for (k, v) in inputs["Wall"])...)
+        wall_inputs = Dict{Symbol,Any}(Symbol(k) => v for (k, v) in inputs["Wall"])
+        haskey(wall_inputs, :shape) && (wall_inputs[:shape] = Vacuum.resolve_wall_shape(wall_inputs[:shape], path))
+        intr.wall_settings = Vacuum.WallShapeSettings(; wall_inputs...)
     else
         intr.wall_settings = Vacuum.WallShapeSettings()
     end

@@ -113,6 +113,49 @@ function distribute_to_equal_arc_grid(xin::Vector{Float64}, zin::Vector{Float64}
 end
 
 """
+    resample_closed_contour(xin, zin, m) -> (xout, zout)
+
+Resample a closed contour (endpoint not repeated) onto `m` points equally spaced in chord
+length, using periodic cubic splines. Starts at the first input point and keeps its orientation.
+"""
+function resample_closed_contour(xin::Vector{Float64}, zin::Vector{Float64}, m::Int)
+    n = length(xin)
+    s = zeros(n + 1)
+    for i in 1:n
+        j = i == n ? 1 : i + 1
+        s[i+1] = s[i] + hypot(xin[j] - xin[i], zin[j] - zin[i])
+    end
+    targets = range(; start=0, length=m, step=s[end] / m)
+    bc = PeriodicBC(; endpoint=:exclusive, period=s[end])
+    return cubic_interp(s[1:n], xin, targets; bc), cubic_interp(s[1:n], zin, targets; bc)
+end
+
+"""
+    wall_clearance(xp, zp, xw, zw) -> (n_outside, min_gap)
+
+Count plasma points `(xp, zp)` outside the closed wall polygon `(xw, zw)` (even-odd rule) and
+return the minimum plasma-to-wall-segment distance.
+"""
+function wall_clearance(xp::AbstractVector, zp::AbstractVector, xw::AbstractVector, zw::AbstractVector)
+    nw = length(xw)
+    n_outside = 0
+    min_gap = Inf
+    for (x, z) in zip(xp, zp)
+        inside = false
+        for i in 1:nw
+            j = i == nw ? 1 : i + 1
+            x1, z1, dx, dz = xw[i], zw[i], xw[j] - xw[i], zw[j] - zw[i]
+            ((z1 > z) != (zw[j] > z)) && x < x1 + (z - z1) * dx / dz && (inside = !inside)
+            seg2 = dx^2 + dz^2
+            t = seg2 > 0 ? clamp(((x - x1) * dx + (z - z1) * dz) / seg2, 0.0, 1.0) : 0.0
+            min_gap = min(min_gap, hypot(x - x1 - t * dx, z - z1 - t * dz))
+        end
+        inside || (n_outside += 1)
+    end
+    return n_outside, min_gap
+end
+
+"""
     periodic_wrap(x, n) -> Int
 
 Inline function for fast periodic wrapping for indices near the valid range [1, n].

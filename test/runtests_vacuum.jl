@@ -185,6 +185,57 @@
                 @test all(wall.x .>= expected_min)
                 @test any(wall.x .<= expected_min + 1e-10)
             end
+
+            @testset "wall file" begin
+                VAC = GeneralizedPerturbedEquilibrium.Vacuum
+                # Ellipse from the outboard midplane with Z = -b sin θ, closing point repeated
+                function write_ellipse(path, n; R0=1.7, a=0.6, b=0.9)
+                    θ = range(0, 2π; length=n + 1)
+                    open(path, "w") do io
+                        println(io, n + 1, "\n", R0, "\nidx R Z")
+                        for (i, t) in enumerate(θ)
+                            println(io, i, " ", R0 + a * cos(t), " ", -b * sin(t))
+                        end
+                    end
+                    return R0 .+ a .* cos.(θ[1:n]), -b .* sin.(θ[1:n])
+                end
+                signed_area(x, z) = 0.5 * sum(x[i] * z[mod1(i + 1, length(x))] - x[mod1(i + 1, length(x))] * z[i] for i in eachindex(x))
+                inputs = _circle_inputs(16)
+                plasma_surf = VAC.PlasmaGeometry(inputs)
+
+                mktempdir() do dir
+                    path = joinpath(dir, "wall.dat")
+
+                    # npts != mtheta: resampled onto mtheta points on the contour
+                    xf, zf = write_ellipse(path, 37)
+                    wall = VAC.WallGeometry(inputs, plasma_surf, WallShapeSettings(; shape=path, equal_arc_wall=false))
+                    @test length(wall.x) == length(wall.z) == 16
+                    @test hypot(wall.x[end] - wall.x[1], wall.z[end] - wall.z[1]) > 0.1
+                    @test wall.x[1] ≈ xf[1] && abs(wall.z[1]) < 1e-12
+                    @test sign(signed_area(wall.x, wall.z)) == sign(signed_area(xf, zf)) == -1
+                    @test all(isapprox.(((wall.x .- 1.7) ./ 0.6) .^ 2 .+ (wall.z ./ 0.9) .^ 2, 1.0; atol=1e-3))
+
+                    # npts == mtheta: points kept exactly
+                    xf, zf = write_ellipse(path, 16)
+                    wall = VAC.WallGeometry(inputs, plasma_surf, WallShapeSettings(; shape=path, equal_arc_wall=false))
+                    @test wall.x == xf && wall.z == zf
+
+                    # Relative paths resolve against the base directory
+                    @test VAC.resolve_wall_shape("wall.dat", dir) == path
+                    @test VAC.resolve_wall_shape(path, "/elsewhere") == path
+                    @test VAC.resolve_wall_shape("conformal", dir) == "conformal"
+
+                    # Clearance: warn when the plasma pokes through the wall
+                    write_ellipse(path, 40; a=0.1, b=0.1)
+                    @test_logs (:warn, r"outside the wall") match_mode=:any VAC.WallGeometry(inputs, plasma_surf, WallShapeSettings(; shape=path))
+                end
+
+                # Concentric circles of radius 0.3 inside 0.6: gap 0.3 up to chord sag
+                θ = range(0, 2π; length=201)[1:200]
+                n_out, gap = VAC.wall_clearance(1.7 .+ 0.3cos.(θ), 0.3sin.(θ), 1.7 .+ 0.6cos.(θ), 0.6sin.(θ))
+                @test n_out == 0
+                @test isapprox(gap, 0.3; atol=1e-3)
+            end
         end
 
         @testset "distribute_to_equal_arc_grid" begin
