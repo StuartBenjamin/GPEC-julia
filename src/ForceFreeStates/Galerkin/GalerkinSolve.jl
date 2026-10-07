@@ -192,27 +192,25 @@ end
 
 Solve the banded Galerkin system in place: `mat` (LAPACK band storage for `solver`, as in
 `GalWorkspace`) is overwritten by its factor and `sol` (the right-hand sides on entry) by the
-solution. The system is first symmetrically Jacobi-scaled, `D·A·D` with `d_j = |A_jj|^(-1/2)` (1 for a
-zero diagonal): the assembled diagonal spans ~25 decades, and unscaled banded LU loses the small
-resonant coefficients that carry Δ′.
+solution. LU is first symmetrically Jacobi-scaled, `D·A·D` with `d_j = |A_jj|^(-1/2)` (1 for a zero
+diagonal): the assembled diagonal spans ~25 decades, and unscaled banded LU loses the small resonant
+coefficients that carry Δ′. Cholesky is RDCON's unscaled `zpbtrf('L')`/`zpbtrs('L')` (gal.f).
 """
 function gal_banded_solve!(mat::Matrix{ComplexF64}, sol::AbstractVecOrMat{ComplexF64}, kl::Int, ku::Int, solver::AbstractString)
-    is_lu = solver == "LU"
     n = size(mat, 2)
-    off = is_lu ? kl + ku + 1 : 1  # band row holding the diagonal
-    iu = is_lu ? ku : 0  # stored superdiagonals
+    if solver != "LU"  # as rdcon/gal.f: unscaled zpbtrf('L')/zpbtrs('L')
+        gal_zpbtrf!(mat, kl)
+        gal_zpbtrs!(mat, kl, sol)
+        return sol
+    end
+    off = kl + ku + 1  # band row holding the diagonal
     d = [iszero(mat[off, j]) ? 1.0 : 1 / sqrt(abs(mat[off, j])) for j in 1:n]
-    for j in 1:n, i in max(1, j - iu):min(n, j + kl)
+    for j in 1:n, i in max(1, j - ku):min(n, j + kl)
         mat[off+i-j, j] *= d[i] * d[j]
     end
     sol .*= d
-    if is_lu
-        _, ipiv = LAPACK.gbtrf!(kl, ku, n, mat)
-        LAPACK.gbtrs!('N', kl, ku, n, mat, ipiv, sol)
-    else
-        gal_zpbtrf!(mat, kl)
-        gal_zpbtrs!(mat, kl, sol)
-    end
+    _, ipiv = LAPACK.gbtrf!(kl, ku, n, mat)
+    LAPACK.gbtrs!('N', kl, ku, n, mat, ipiv, sol)
     sol .*= d
     return sol
 end
