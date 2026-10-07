@@ -143,16 +143,9 @@ function galerkin_solve(ctrl::ForceFreeStatesControl, equil, mats::MatrixSplines
     end
 
     # --- banded solve (gal.f) ---
+    ctrl.verbose && @info "Galerkin $(ws.solver) banded factorization + solve"
     ws.sol .= ws.rhs
-    if ws.solver == "LU"
-        ctrl.verbose && @info "Galerkin LU banded factorization + solve"
-        ab, ipiv = LinearAlgebra.LAPACK.gbtrf!(ws.kl, ws.ku, ws.ndim, ws.mat)
-        LinearAlgebra.LAPACK.gbtrs!('N', ws.kl, ws.ku, ws.ndim, ab, ipiv, ws.sol)
-    else
-        ctrl.verbose && @info "Galerkin Cholesky banded factorization + solve"
-        LinearAlgebra.LAPACK.pbtrf!('L', ws.kl, ws.mat)
-        LinearAlgebra.LAPACK.pbtrs!('L', ws.kl, ws.mat, ws.sol)
-    end
+    gal_banded_solve!(ws.mat, ws.sol, ws.kl, ws.ku, ws.solver)
 
     # --- extract Δ′ from the small resonant coefficients (gal.f) ---
     delta = zeros(ComplexF64, nsol, 2 * msing)
@@ -202,6 +195,58 @@ function galerkin_solve(ctrl::ForceFreeStatesControl, equil, mats::MatrixSplines
     match = gal_match_rpec(ctrl, equil, intr, result, dp)
     ctrl.gal_ideal_flag || (ctrl.verbose && @info "RPEC matching: linear-solve residual = $(match.residual)")
     return GalerkinResult(msing, sing_psi, sing_q, sing_m, sing_n, di, alpha, solution, match), dp
+end
+
+"""
+    gal_banded_solve!(mat, sol, kl, ku, solver) -> sol
+
+Solve the banded Galerkin system in place: `mat` (LAPACK band storage for `solver`, as in
+`GalWorkspace`) is overwritten by its factor and `sol` (the right-hand sides on entry) by the
+solution. The system is first symmetrically Jacobi-scaled, `D·A·D` with `d_j = |A_jj|^(-1/2)` (1 for a
+zero diagonal): the assembled diagonal spans ~25 decades, and unscaled banded LU loses the small
+resonant coefficients that carry Δ′.
+"""
+function gal_banded_solve!(mat::Matrix{ComplexF64}, sol::AbstractVecOrMat{ComplexF64}, kl::Int, ku::Int, solver::AbstractString)
+    is_lu = solver == "LU"
+    n = size(mat, 2)
+    off = is_lu ? kl + ku + 1 : 1  # band row holding the diagonal
+    iu = is_lu ? ku : 0  # stored superdiagonals
+    d = [iszero(mat[off, j]) ? 1.0 : 1 / sqrt(abs(mat[off, j])) for j in 1:n]
+    for j in 1:n, i in max(1, j - iu):min(n, j + kl)
+        mat[off+i-j, j] *= d[i] * d[j]
+    end
+    sol .*= d
+    if is_lu
+        _, ipiv = LAPACK.gbtrf!(kl, ku, n, mat)
+        LAPACK.gbtrs!('N', kl, ku, n, mat, ipiv, sol)
+    else
+        gal_zpbtrf!(mat, kl)
+        gal_zpbtrs!(mat, kl, sol)
+    end
+    sol .*= d
+    return sol
+end
+
+# Lower-band Hermitian Cholesky (LAPACK zpbtrf/zpbtrs); LinearAlgebra.LAPACK has no pbtrf!/pbtrs! wrapper.
+function gal_zpbtrf!(AB::Matrix{ComplexF64}, kd::Int)
+    info = Ref{LinearAlgebra.BlasInt}()
+    ccall((LinearAlgebra.BLAS.@blasfunc(zpbtrf_), LinearAlgebra.libblastrampoline), Cvoid,
+        (Ref{UInt8}, Ref{LinearAlgebra.BlasInt}, Ref{LinearAlgebra.BlasInt}, Ptr{ComplexF64}, Ref{LinearAlgebra.BlasInt},
+            Ref{LinearAlgebra.BlasInt}, Clong),
+        'L', size(AB, 2), kd, AB, max(1, stride(AB, 2)), info, 1)
+    info[] > 0 && error("gal_solver=\"cholesky\": Galerkin matrix is not positive definite (zpbtrf info=$(info[])); use gal_solver=\"LU\"")
+    LAPACK.chklapackerror(info[])
+    return AB
+end
+
+function gal_zpbtrs!(AB::Matrix{ComplexF64}, kd::Int, B::AbstractVecOrMat{ComplexF64})
+    info = Ref{LinearAlgebra.BlasInt}()
+    ccall((LinearAlgebra.BLAS.@blasfunc(zpbtrs_), LinearAlgebra.libblastrampoline), Cvoid,
+        (Ref{UInt8}, Ref{LinearAlgebra.BlasInt}, Ref{LinearAlgebra.BlasInt}, Ref{LinearAlgebra.BlasInt}, Ptr{ComplexF64},
+            Ref{LinearAlgebra.BlasInt}, Ptr{ComplexF64}, Ref{LinearAlgebra.BlasInt}, Ref{LinearAlgebra.BlasInt}, Clong),
+        'L', size(AB, 2), kd, size(B, 2), AB, max(1, stride(AB, 2)), B, max(1, stride(B, 2)), info, 1)
+    LAPACK.chklapackerror(info[])
+    return B
 end
 
 """
