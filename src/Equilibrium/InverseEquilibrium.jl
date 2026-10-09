@@ -39,7 +39,22 @@ function inverse_extrap(xx::Matrix{Float64}, ff::Matrix{Float64}, x::Float64)::V
     return f
 end
 
+"""
+    periodic_series_interp(xs, fs; nwrap=16)
 
+Periodic cubic spline of the `Series` rows `fs` (`fs[end, :] == fs[1, :]`) on a non-uniform grid `xs`.
+FastInterpolations' `PeriodicBC` is wrong there (≤ 0.4.19: `_build_periodic_cache` shifts the upper diagonal
+by one cell), leaving O(h³) values and O(h²) slopes; instead `nwrap` cells are wrapped onto each side and a
+`CubicFit` spline is fitted, whose end effects decay as (2 - √3)^nwrap.
+"""
+function periodic_series_interp(xs::AbstractVector{Float64}, fs::AbstractMatrix{Float64}; nwrap::Int=16)
+    n = length(xs) - 1
+    k = min(nwrap, n)
+    period = xs[end] - xs[1]
+    xe = [xs[(n-k+1):n] .- period; xs; xs[2:(k+1)] .+ period]
+    fe = [fs[(n-k+1):n, :]; fs; fs[2:(k+1), :]]
+    return cubic_interp(xe, Series(fe); bc=CubicFit())
+end
 
 """
     resolve_psihigh!(input::InverseRunInput) -> InverseRunInput
@@ -300,7 +315,8 @@ function equilibrium_solver(input::InverseRunInput; override_psi_nodes::Union{No
         # then evaluate at the uniform SFL theta grid (rzphi_ys). This correctly
         # propagates the SFL coordinate transformation into the rzphi splines.
         # (Using spl.y directly would give pre-transformation values — wrong for eqfun.)
-        spl_post = cubic_interp(spl_xs, Series(spl_fs); bc=PeriodicBC())
+        # spl_xs is non-uniform: see periodic_series_interp.
+        spl_post = periodic_series_interp(spl_xs, spl_fs)
         hint_post = Ref(1)
         for itheta in 0:mtheta
             spl_post(spl_post_buf, rzphi_ys[itheta+1]; hint=hint_post)
