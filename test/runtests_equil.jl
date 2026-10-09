@@ -239,6 +239,34 @@ using Statistics
         @test (@test_logs (:warn, r"absent or unusable") match_mode = :any Eq.read_ldp_i(cfg("ldp_i", stripped)).ingest.sq_fs) == tabulated
     end
 
+    @testset "Inverse grid types (original, pow2, rho)" begin
+        Eq = GeneralizedPerturbedEquilibrium.Equilibrium
+        ifile = joinpath(@__DIR__, "test_data", "TokaMaker_ifile", "i33x65.ifile")
+        cfg(grid) = Eq.EquilibriumConfig(; eq_type="ldp_i", eq_filename=ifile, jac_type="boozer", grid_type=grid, mpsi=16, psilow=0.01, psihigh=0.99)
+        splines(eq) = (eq.rzphi_rsquared, eq.rzphi_offset, eq.rzphi_nu, eq.rzphi_jac, eq.eqfun_B, eq.eqfun_metric1, eq.eqfun_metric2)
+        finite(eq) = all(isfinite, eq.profiles.dVdpsi_spline.y) && all(all(isfinite, s.nodal_derivs.partials) for s in splines(eq))
+        eqs = Dict(grid => Eq.setup_equilibrium(cfg(grid)) for grid in ("original", "pow1", "pow2", "rho"))
+
+        # original: the file's own ψ nodes, axis included, whatever psilow/psihigh/mpsi
+        eq_o = eqs["original"]
+        @test eq_o.rzphi_xs == Eq.read_ldp_i(cfg("original")).rz_in_xs
+        @test eq_o.rzphi_xs[1] == 0.0 && length(eq_o.rzphi_xs) == 33
+        # The extrapolated axis node: B close to F/R₀
+        b_axis = abs(eq_o.profiles.F_spline.y[1]) / (2π * eq_o.ro)
+        @test maximum(abs.(eq_o.eqfun_B.nodal_derivs.partials[1, 1, :] ./ b_axis .- 1)) < 1e-2
+
+        # pow1/pow2: Fortran powspace(psilow, psihigh, p, mpsi+1, "upper"); rho: psihigh·(i/(mpsi+1))², i = 1..mpsi+1
+        t = (0:16) ./ 16
+        @test eqs["pow1"].rzphi_xs ≈ 0.01 .+ 0.98 .* (3t .- t .^ 3) ./ 2
+        @test eqs["pow2"].rzphi_xs ≈ 0.01 .+ 0.98 .* (15 / 8) .* (t .- 2t .^ 3 ./ 3 .+ t .^ 5 ./ 5)
+        @test eqs["rho"].rzphi_xs ≈ 0.99 .* ((1:17) ./ 17) .^ 2
+
+        for (grid, eq) in eqs
+            @test finite(eq)
+            @test isapprox(eq.profiles.q_spline(0.5), eqs["pow1"].profiles.q_spline(0.5); rtol=1e-3)
+        end
+    end
+
     @testset "EFIT Method Consistency" begin
         # All three methods solve the same equilibrium — q-profiles should broadly agree.
         # Tolerance is 10% to allow for method-specific discretisation differences.

@@ -557,6 +557,13 @@ function equilibrium_gse!(equil::PlasmaEquilibrium)
             flux_fs[ipsi, itheta, 2] *= 2π * psio / f4
         end
     end
+    # An axis node (r² = 0) is 0/0 here: extrapolate it in √ψ from the innermost surfaces.
+    if equil.rzphi_xs[1] == 0.0
+        rho_in = repeat(sqrt.(equil.rzphi_xs[2:4]), 1, mtheta + 1)
+        for k in 1:2
+            flux_fs[1, :, k] .= inverse_extrap(rho_in, flux_fs[2:4, :, k], 0.0)
+        end
+    end
     # Create flux interpolants for Grad-Shafranov diagnostics
     @views flux_fs[:, end, :] .= flux_fs[:, 1, :]
     flux_opts = (bc=(CubicFit(), PeriodicBC()), extrap=(ExtendExtrap(), WrapExtrap()))
