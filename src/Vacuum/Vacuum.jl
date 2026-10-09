@@ -10,6 +10,7 @@ using AdaptiveArrayPools
 # Import parent modules
 import ..Equilibrium
 using ..Utilities.FourierTransforms: FourierTransform, compute_fourier_coefficients
+using ..Utilities: periodic_cubic_interp
 
 include("Utilities.jl")
 include("DataTypes.jl")
