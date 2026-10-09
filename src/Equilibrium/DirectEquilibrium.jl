@@ -531,7 +531,7 @@ robustness.
 
         ff_fs_nodes[end, :] .= ff_fs_nodes[1, :]  # enforce periodic endpoint
 
-        ff_interp = cubic_interp(ff_x_nodes, Series(ff_fs_nodes); bc=PeriodicBC())
+        ff_interp = Utilities.periodic_cubic_interp(ff_x_nodes, ff_fs_nodes)  # ff_x_nodes is non-uniform
         ff_deriv = deriv1(ff_interp)
 
         # Resample ff onto uniform theta grid

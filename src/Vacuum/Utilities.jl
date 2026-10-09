@@ -105,10 +105,9 @@ function distribute_to_equal_arc_grid(xin::Vector{Float64}, zin::Vector{Float64}
 
     # Re-parameterize based on equal arc-length segments by interpolate the original (x,z) data at the equal arc length points
     arc_length_targets = range(; start=0, length=mtheta, step=arc_length[end]/mtheta)
-    # arc_length is an uneven grid so we have to specify the period explicitly
-    periodic_bc = PeriodicBC(; endpoint=:exclusive, period=arc_length[end])
-    xout = cubic_interp(arc_length[1:(end-1)], xin, arc_length_targets; bc=periodic_bc)
-    zout = cubic_interp(arc_length[1:(end-1)], zin, arc_length_targets; bc=periodic_bc)
+    # arc_length is non-uniform, so close the loop and use periodic_cubic_interp
+    xout = periodic_cubic_interp(arc_length, [xin; xin[1]]).(arc_length_targets)
+    zout = periodic_cubic_interp(arc_length, [zin; zin[1]]).(arc_length_targets)
     return xout, zout
 end
 

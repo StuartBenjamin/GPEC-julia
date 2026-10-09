@@ -183,7 +183,7 @@ function resample_contour_to_theta_grid!(
     η_ext[n_ext] = η_ext[1] + 2π
     logρ_ext[n_ext] = logρ_ext[1]
 
-    logρ_spl = cubic_interp(η_ext, logρ_ext; bc=PeriodicBC())
+    logρ_spl = Utilities.periodic_cubic_interp(η_ext, logρ_ext)  # η_ext is non-uniform
 
     # theta_grid is in turns [0, 1]; sample at 2π*θ radians and convert polar → Cartesian.
     # Monotonically increasing η → shared hint gives O(1) lookups per step.

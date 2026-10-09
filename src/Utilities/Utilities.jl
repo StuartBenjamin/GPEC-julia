@@ -13,6 +13,7 @@ mathematical utilities.
   - `PhysicalConstants`: SI physical constants matching Fortran GPEC/SLAYER values
   - `NeoclassicalResistivity`: Spitzer/Sauter/Redl resistivity closures shared by
     the GGJ and SLAYER inner-layer models
+  - `periodic_cubic_interp`: periodic cubic spline on non-uniform grids
   - `HDF5Annotations`: self-describing metadata (long_name/units/dims attributes and
     HDF5 Dimension Scales) for the gpec.h5 output
 """
@@ -26,6 +27,7 @@ include("NeoclassicalResistivity.jl")
 include("GridUtilities.jl")
 include("HDF5Annotations.jl")
 include("AdaptiveSampling.jl")
+include("PeriodicSplines.jl")
 
 using .FourierTransforms
 export FourierTransform, inverse, compute_fourier_coefficients
@@ -44,6 +46,9 @@ export HDF5Annotations
 # Adaptive one-dimensional sampling for expensive scans
 using .AdaptiveSampling
 export AdaptiveSampling, adaptive_sample
+
+# Periodic cubic spline that is correct on non-uniform grids
+export periodic_cubic_interp
 
 using .NeoclassicalResistivity
 export NeoclassicalResistivity
