@@ -267,6 +267,22 @@ using Statistics
         end
     end
 
+    @testset "Periodic spline on a non-uniform grid" begin
+        # The inverse SFL grid is non-uniform; PeriodicBC errs there (slopes 4e-4, values 9e-7 on this grid)
+        Eq = GeneralizedPerturbedEquilibrium.Equilibrium
+        f(x) = sin(2π * x) + 0.3cos(4π * x)
+        fp(x) = 2π * cos(2π * x) - 1.2π * sin(4π * x)
+        u = range(0, 1; length=129)
+        x = collect(u .+ 0.15 .* sin.(2π .* u) ./ 2π)
+        x[end] = 1.0
+        fs = hcat(f.(x), f.(x))
+        fs[end, :] .= fs[1, :]
+        spl = Eq.periodic_series_interp(x, fs)
+        dspl = deriv1(spl)
+        @test maximum(abs(dspl(xi)[1] - fp(xi)) for xi in x) < 2e-5
+        @test maximum(abs(spl(t)[2] - f(t)) for t in range(0, 1; length=1001)) < 5e-7
+    end
+
     @testset "EFIT Method Consistency" begin
         # All three methods solve the same equilibrium — q-profiles should broadly agree.
         # Tolerance is 10% to allow for method-specific discretisation differences.
