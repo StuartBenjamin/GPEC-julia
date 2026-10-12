@@ -123,7 +123,7 @@ gpec.toml.
   - `mthvac::Int` - Number of vacuum poloidal grid points (corresponds to `mtheta` in VacuumInput)
   - `nzvac::Int` - Number of vacuum toroidal grid points (corresponds to `nzeta` in VacuumInput3D)
   - `sing_start::Int` - Start integration at the `sing_start`-th singular surface
-  - `frobenius_psi_max::Float64` - Largest starting ψ_N at which the Frobenius start is used. The Frobenius start [Glasser 2016 Eq. 51] is a power series about the magnetic axis, so an integration beginning above this value (an interior start from a raised `psilow`, or `qlow` above q₀) instead starts every solution with zero displacement and unit "momentum" (U₁ = 0, U₂ = I), the initialization Fortran DCON always uses, and warns that it did. `0` selects the fixed start everywhere, silently. Default 0.01, which keeps every axis-started case on the Frobenius start.
+  - `frobenius_psi_max::Float64` - Largest starting ψ_N at which the opt-in Frobenius start is used. Default `0` selects the fixed start everywhere and silently: U₁ = 0, U₂ = I, the initialization Fortran DCON uses. A positive value uses the diagonal Frobenius 2×2 when the integration starts at or below it, and warns that this start is currently unreliable. A start above the threshold uses the fixed start with no warning. That 2×2 does not recover a displacement that vanishes as a positive power of the starting ψ, and its m = 0 branch is an imaginary pair whose sign follows roundoff. Leave this at 0 unless the Frobenius start itself is under test.
   - `nn_low::Int` - Lower bound for toroidal modes
   - `nn_high::Int` - Upper bound for toroidal modes
   - `delta_mlow::Int` - Expands lower bound of Fourier harmonics by delta_mlow
@@ -152,7 +152,6 @@ gpec.toml.
   - `force_termination::Bool` - Terminate after force-free states (skip perturbed equilibrium calculations)
   - `integrator::String` - Which formalism integrates the Euler-Lagrange system. `"forward"` sweeps the plasma serially with Gaussian reduction and returns `u_store` / `du_store` / `xi_s_store` dense in the axis (EL) basis — the only convention PerturbedEquilibrium and FieldReconstruction consume correctly, and the only path that supports `kinetic_factor > 0`. `"riccati"` (default) runs the chunked fundamental-matrix propagator driver (Glasser 2018 Phys. Plasmas 25, 032507): chunks are integrated independently from identity initial conditions and assembled serially with Riccati-style crossings, which is the only way to obtain the singular-surface Δ' matrix for the tearing-mode solvers downstream, but leaves `u_store` as sparse chunk-endpoint Riccati states, so dense ξ profiles are unavailable. `"galerkin"` solves the same Euler-Lagrange system variationally instead of by radial ODE integration — the RDCON outer-region singular Galerkin method (Glasser, Wang & Park 2016 Phys. Plasmas 23, 112506), which discretizes the displacement on packed Hermite-cubic elements and solves one global banded system — producing the resistive Δ′ matrix (the RPEC inner-layer match is a POST-SOLVE transformation: `gal_match_flag` routes the finished solve through it); it computes its own vacuum response and returns no free-boundary energies, and does not support `kinetic_factor > 0`. Requires `singfac_min != 0` for `"riccati"`.
   - `nchunks::Int` - Target number of Riccati integration chunks. `0` (the default) derives the count from problem structure alone: `max(2·msing + 3, 8·(msing + 1) + msing)`, enough sub-chunks per segment to keep the accumulated propagator products well-conditioned. An explicit value below `2·msing + 3` is clamped up with a warning. Chunk sizing never consults `Threads.nthreads()`, so Riccati outputs are identical whatever thread count `julia -t` provides; threads only change wall-clock.
-  - `extended_precision_bvp::Bool` - When `true` (default), promote the Δ' BVP linear system to `Complex{Double64}` (~31 digits) for the LU solve and PEST3 combination. Guards against catastrophic cancellation in the PEST3 four-term combination (dp_raw entries can be 10⁴–10⁵× larger than the result; the imaginary part of off-diagonal Δ' is particularly sensitive). Disabling (`false`) saves ~1.5–2× the BVP solve time but on DIIID-class equilibria the imaginary Δ' components can drift by factors of 2–5×; only disable for performance experiments on cases where Float64 has been validated against Double64.
 """
 @kwdef struct ForceFreeStatesControl
     verbose::Bool = true
@@ -189,7 +188,6 @@ gpec.toml.
     force_termination::Bool = false
     integrator::String = "riccati"   # Default: unlocks SingularSurfaces/Delta_prime_matrix (STRIDE BVP Δ′ matrix) used by SLAYER/GGJ downstream. Use "forward" for dense ξ (PerturbedEquilibrium) or kinetic runs.
     nchunks::Int = 0                 # Riccati chunk-count target; 0 = auto (derived from msing alone, never from Threads.nthreads()).
-    extended_precision_bvp::Bool = true   # Promote Δ' BVP to Complex{Double64}; default on (Float64 drifts the imaginary Δ' by 2–5× on DIIID-class cases).
 
     # --- RDCON outer-region Galerkin Δ′ solver (gal_solve port); selected by integrator = "galerkin" ---
     gal_solver::String = "LU"       # "LU" (zgbtrf/zgbtrs) or "cholesky" (zpbtrf/zpbtrs)
@@ -222,5 +220,5 @@ gpec.toml.
     gal_rho::Vector{Float64} = Float64[]      # per-surface mass density ρ [kg/m³] (length msing, core→edge); Fortran rmatch `massden`
     gal_rotation::Vector{Float64} = Float64[] # per-surface rotation frequency f [Hz] (length msing, core→edge); forced eigenvalue γ_s = 2πi·n·f. Fortran rmatch `rotation`
     gal_gamma::Float64 = 5 / 3       # ratio of specific heats Γ for the resistive-layer coefficients (resist_eval G term)
-    frobenius_psi_max::Float64 = 0.01
+    frobenius_psi_max::Float64 = 0.0
 end
