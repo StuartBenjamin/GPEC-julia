@@ -372,7 +372,7 @@ end
 Banded Cholesky solve of the full-band system `mat`, leaving `mat` untouched. Rows that are
 identity rows (Dirichlet DOFs: axis, fixed or coil edge) have their columns moved to the
 right-hand side, which keeps the system Hermitian. Returns `false`, with `sol` unchanged, when
-the remaining matrix is not Hermitian (each entry to 1e-12 of √|aᵢᵢaⱼⱼ|, diagonal included) or not
+the remaining matrix is not Hermitian (each entry to 1e-10 of √|aᵢᵢaⱼⱼ|, diagonal included) or not
 positive definite.
 """
 function gal_cholesky_solve!(mat::Matrix{ComplexF64}, sol::AbstractVecOrMat{ComplexF64}, kl::Int, ku::Int)
@@ -382,9 +382,9 @@ function gal_cholesky_solve!(mat::Matrix{ComplexF64}, sol::AbstractVecOrMat{Comp
     a(i, j) = mat[off+i-j, j]
     band(i) = max(1, i - kl):min(n, i + kl)
     fixed = [all(j == i ? a(i, j) == 1 : iszero(a(i, j)) for j in band(i)) for i in 1:n]
-    # Scale-free test: the diagonal spans many decades, so a global tolerance would pass the small rows
+    # Scale-free test (the diagonal spans many decades); 1e-10 clears the quadrature round-off (~1e-11)
     for j in 1:n, i in j:min(n, j + kl)
-        fixed[i] || fixed[j] || abs(a(i, j) - conj(a(j, i))) <= 1e-12 * sqrt(abs(a(i, i) * a(j, j))) || return false
+        fixed[i] || fixed[j] || abs(a(i, j) - conj(a(j, i))) <= 1e-10 * sqrt(abs(a(i, i) * a(j, j))) || return false
     end
     ab = zeros(ComplexF64, kl + 1, n)
     for j in 1:n, i in j:min(n, j + kl)
