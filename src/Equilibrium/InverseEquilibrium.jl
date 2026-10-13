@@ -39,6 +39,20 @@ function inverse_extrap(xx::Matrix{Float64}, ff::Matrix{Float64}, x::Float64)::V
     return f
 end
 
+"""
+    extrap_axis_row!(fs, xs, ks; me=3) -> fs
+
+Fill the axis row (`xs[1] == 0`) of `fs[:, :, k]` for each `k` in `ks`, extrapolating the next
+`me` surfaces in √ψ (∝ r), where the θ-dependent SFL and GSE terms are 0/0.
+"""
+function extrap_axis_row!(fs::Array{Float64,3}, xs::AbstractVector{Float64}, ks; me::Int=3)
+    rho = repeat(sqrt.(xs[2:(me+1)]), 1, size(fs, 2))
+    for k in ks
+        fs[1, :, k] .= inverse_extrap(rho, fs[2:(me+1), :, k], 0.0)
+    end
+    return fs
+end
+
 
 
 """
@@ -140,14 +154,6 @@ function equilibrium_solver(input::InverseRunInput; override_psi_nodes::Union{No
     rz_rsq = cubic_interp((rz_in_xs, rz_in_ys), r2; itp_opts2d...)
     rz_deta = cubic_interp((rz_in_xs, rz_in_ys), deta; itp_opts2d...)
     # c-----------------------------------------------------------------------
-    # c     prepare new spline type for surface quantities.
-    # c-----------------------------------------------------------------------
-
-    if grid_type in ["original", "orig"]
-        mpsi = size(sq_in._fs, 1) - 1
-    end
-
-    # c-----------------------------------------------------------------------
     # c     set up radial grid
     # c-----------------------------------------------------------------------
     if override_psi_nodes !== nothing
@@ -180,6 +186,22 @@ function equilibrium_solver(input::InverseRunInput; override_psi_nodes::Union{No
             mpsi = 128
         end
         sq_xs = [psilow + (psihigh - psilow) * (3(i / mpsi) - (i / mpsi)^3) / 2 for i in 0:mpsi]
+    elseif grid_type == "pow2"
+        if mpsi == 0
+            mpsi = 128
+        end
+        sq_xs = Utilities.powspace(psilow, psihigh, 2, mpsi + 1, "upper")[1, :]
+    elseif grid_type == "rho"
+        if mpsi == 0
+            mpsi = 128
+        end
+        # Uniform in √ψ from psihigh/(mpsi+1)² to psihigh; psilow is ignored (Fortran inverse.f)
+        sq_xs = [psihigh * i^2 / (mpsi + 1)^2 for i in 1:(mpsi+1)]
+    elseif grid_type in ("original", "orig")
+        # The input's own ψ nodes, axis included; psilow/psihigh are ignored (Fortran inverse.f, which
+        # takes the 1D input's nodes; they differ from the 2D ones only for efit_by_inversion)
+        sq_xs = copy(rz_in_xs)
+        mpsi = length(sq_xs) - 1
     elseif grid_type == "uniform"
         if mpsi == 0
             mpsi = 128
@@ -188,10 +210,10 @@ function equilibrium_solver(input::InverseRunInput; override_psi_nodes::Union{No
     else
         error("Unsupported grid_type: $grid_type")
     end
-    # Floor node spacing on the fixed grids (ldp/pow1 pack the edge below the integration-noise
-    # scale at high mpsi); the auto grid floors its refined grid in refined_psi_grid, and an
-    # override grid arrives already floored.
-    if override_psi_nodes === nothing && !(grid_type in ("auto", "log_asymptotic"))
+    # Floor node spacing on the fixed grids (ldp/pow1/pow2 pack the edge below the integration-noise
+    # scale at high mpsi); the auto grid floors its refined grid in refined_psi_grid, an override
+    # grid arrives already floored, and the original grid keeps the input's nodes.
+    if override_psi_nodes === nothing && !(grid_type in ("auto", "log_asymptotic", "original", "orig"))
         sq_xs = enforce_min_spacing(sq_xs, MIN_KNOT_SPACING)
         mpsi = length(sq_xs) - 1
     end
@@ -235,6 +257,10 @@ function equilibrium_solver(input::InverseRunInput; override_psi_nodes::Union{No
     for ipsi in 0:mpsi
         psifac = rzphi_xs[ipsi+1]
         sq_in(f_sq_in_buf, psifac; hint=sq_in_hint)
+        sq_fs[ipsi+1, 1] = f_sq_in_buf[1] * twopi
+        sq_fs[ipsi+1, 2] = f_sq_in_buf[2]
+        sq_fs[ipsi+1, 4] = f_sq_in_buf[3]  # field-line q of an i-file replaces it below
+        psifac == 0.0 && continue  # axis node: filled by extrapolation below
         spl_xs .= rzphi_ys
         for itheta in 0:mtheta
             theta = rzphi_ys[itheta+1]
@@ -296,11 +322,17 @@ function equilibrium_solver(input::InverseRunInput; override_psi_nodes::Union{No
             spl_post(spl_post_buf, rzphi_ys[itheta+1]; hint=hint_post)
             @views rzphi_fs[ipsi+1, itheta+1, :] .= spl_post_buf[1:4]
         end
-
-        sq_fs[ipsi+1, 1] = f_sq_in_buf[1] * twopi
-        sq_fs[ipsi+1, 2] = f_sq_in_buf[2]
         sq_fs[ipsi+1, 3] = spl_fsi[mtheta+1, 3] * twopi * pi # dV/d(psi)
-        sq_fs[ipsi+1, 4] = q_from_geometry ? spl_fsi[mtheta+1, 4] * sq_fs[ipsi+1, 1] / (2 * twopi * psio) : f_sq_in_buf[3]
+        if q_from_geometry
+            sq_fs[ipsi+1, 4] = spl_fsi[mtheta+1, 4] * sq_fs[ipsi+1, 1] / (2 * twopi * psio)
+        end
+    end
+    # An axis node (original grid) has r² = 0, where the SFL weights are 0/0: extrapolate it from the
+    # innermost surfaces as deta is above, θ-dependent fields in √ψ (∝ r), dV/dψ and field-line q in ψ.
+    if sq_xs[1] == 0.0
+        extrap_axis_row!(rzphi_fs, sq_xs, 2:4; me)
+        ks = q_from_geometry ? (3:4) : (3:3)
+        sq_fs[1, ks] .= inverse_extrap(repeat(sq_xs[2:(me+1)], 1, length(ks)), sq_fs[2:(me+1), ks], 0.0)
     end
 
     sq = cubic_interp(sq_xs, Series(sq_fs); extrap=ExtendExtrap())
@@ -343,6 +375,7 @@ function equilibrium_solver(input::InverseRunInput; override_psi_nodes::Union{No
 
     v = zeros(Float64, 3, 3)
     for ipsi in 0:mpsi
+        sq_xs[ipsi+1] == 0.0 && continue  # axis node: extrapolated below
         f_sq_vec = @view sq.y[ipsi+1, :]
         for itheta in 0:mtheta
             # Evaluate rzphi interpolants at grid points using nodal_derivs
@@ -387,6 +420,7 @@ function equilibrium_solver(input::InverseRunInput; override_psi_nodes::Union{No
             eqfun_fs[ipsi+1, itheta+1, 3] = (v[2, 3] * v[3, 3] + f_sq_vec[4] * v[3, 3]^2) / (jacfac * eqfun_fs[ipsi+1, itheta+1, 1]^2)
         end
     end
+    sq_xs[1] == 0.0 && extrap_axis_row!(eqfun_fs, sq_xs, 1:3; me)
     # Create 2D interpolants for physics quantities (eqfun)
     eqfun_grid2d = (eqfun_xs, theta_range)
     @views eqfun_fs[:, end, :] .= eqfun_fs[:, 1, :]
