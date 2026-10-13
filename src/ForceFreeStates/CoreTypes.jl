@@ -190,7 +190,7 @@ gpec.toml.
     nchunks::Int = 0                 # Riccati chunk-count target; 0 = auto (derived from msing alone, never from Threads.nthreads()).
 
     # --- RDCON outer-region Galerkin Δ′ solver (gal_solve port); selected by integrator = "galerkin" ---
-    gal_solver::String = "auto"     # "auto" (banded Cholesky if the matrix is Hermitian positive definite, else LU), "LU" (zgbtrf/zgbtrs) or "cholesky" (zpbtrf/zpbtrs, error if not positive definite)
+    gal_solver::String = "auto"     # "auto" (banded Cholesky if the matrix is positive definite, else LU), "LU" (zgbtrf/zgbtrs) or "cholesky" (zpbtrf/zpbtrs, error if not positive definite)
     gal_nx::Int = 256               # elements per interval between singular surfaces
     gal_nq::Int = 6                 # Gauss-Lobatto quadrature order per element
     gal_pfac::Float64 = 0.001       # grid packing ratio near singular surfaces
