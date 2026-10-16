@@ -110,6 +110,8 @@
         # :lar, :rfitzp, :toroidal branches.
         @test p_lar.dc_tmp < 0
         @test p_rf.dc_tmp < 0
+        # :lar is the r_s-normalized large-aspect-ratio form of :rfitzp (W_d = √8 (χ⊥/χ∥)^¼ /√(ε s n)).
+        @test p_lar.dc_tmp ≈ p_rf.dc_tmp rtol = 1e-10
         @test p_tor.dc_tmp < 0
 
         # Sign flips with sign of dr_val

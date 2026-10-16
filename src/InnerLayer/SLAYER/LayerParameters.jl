@@ -168,7 +168,7 @@ function _solve_dc_tmp(; dc_type::Symbol, dr_val::Real, dgeo_val::Real,
     if dc_type === :lar
         return 0.5 * (-dr_val) * π^1.5 *
                (chi_par / chi_perp)^0.25 *
-               sqrt((n_tor * abs(sval_r)) / (R0 * rs))
+               sqrt((rs * n_tor * abs(sval_r)) / R0)
     elseif dc_type === :rfitzp
         return -(sqrt(2.0) * π^1.5 * dr_val) / Wd
     elseif dc_type === :toroidal
