@@ -146,8 +146,8 @@ function resample_closed_contour(xin::Vector{Float64}, zin::Vector{Float64}, m::
         s[i+1] = s[i] + hypot(xin[j] - xin[i], zin[j] - zin[i])
     end
     targets = range(; start=0, length=m, step=s[end] / m)
-    # s is non-uniform: close the loop and use periodic_cubic_interp
-    return periodic_cubic_interp(s, [xin; xin[1]]).(targets), periodic_cubic_interp(s, [zin; zin[1]]).(targets)
+    bc = PeriodicBC(; endpoint=:exclusive, period=s[end])
+    return cubic_interp(s[1:n], xin, targets; bc), cubic_interp(s[1:n], zin, targets; bc)
 end
 
 """
