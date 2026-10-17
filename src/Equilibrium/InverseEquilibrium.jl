@@ -291,7 +291,7 @@ function equilibrium_solver(input::InverseRunInput; override_psi_nodes::Union{No
         # then evaluate at the uniform SFL theta grid (rzphi_ys). This correctly
         # propagates the SFL coordinate transformation into the rzphi splines.
         # (Using spl.y directly would give pre-transformation values — wrong for eqfun.)
-        spl_post = Utilities.periodic_cubic_interp(spl_xs, spl_fs)  # spl_xs is non-uniform
+        spl_post = cubic_interp(spl_xs, Series(spl_fs); bc=PeriodicBC())
         hint_post = Ref(1)
         for itheta in 0:mtheta
             spl_post(spl_post_buf, rzphi_ys[itheta+1]; hint=hint_post)

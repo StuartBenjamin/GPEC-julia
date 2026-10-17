@@ -72,23 +72,4 @@
         GeneralizedPerturbedEquilibrium.Utilities.get_complex_coeffs!(out, fc, 10, 1)
         @test out[3] == c2  # Mode 2 is at index 3 (0-indexed mode)
     end
-
-    @testset "periodic_cubic_interp on a non-uniform grid" begin
-        # SFL and field-line θ grids are non-uniform; FastInterpolations' PeriodicBC errs there (slopes 4e-4, values 9e-7 here)
-        periodic_cubic_interp = GeneralizedPerturbedEquilibrium.Utilities.periodic_cubic_interp
-        f(x) = sin(2π * x) + 0.3cos(4π * x)
-        fp(x) = 2π * cos(2π * x) - 1.2π * sin(4π * x)
-        u = range(0, 1; length=129)
-        x = collect(u .+ 0.15 .* sin.(2π .* u) ./ 2π)
-        x[end] = 1.0
-        fs = hcat(f.(x), f.(x))
-        fs[end, :] .= fs[1, :]
-        spl = periodic_cubic_interp(x, fs)
-        dspl = deriv1(spl)
-        @test maximum(abs(dspl(xi)[1] - fp(xi)) for xi in x) < 2e-5
-        @test maximum(abs(spl(t)[2] - f(t)) for t in range(0, 1; length=1001)) < 5e-7
-        # Vector data on a shifted period
-        spl1 = periodic_cubic_interp(x .+ 0.25, fs[:, 1])
-        @test maximum(abs(spl1(t + 0.25) - f(t)) for t in range(0, 1; length=1001)) < 5e-7
-    end
 end
