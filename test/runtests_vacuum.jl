@@ -212,13 +212,14 @@
                     @test length(wall.x) == length(wall.z) == 16
                     @test hypot(wall.x[end] - wall.x[1], wall.z[end] - wall.z[1]) > 0.1
                     @test wall.x[1] ≈ xf[1] && abs(wall.z[1]) < 1e-12
-                    @test sign(signed_area(wall.x, wall.z)) == sign(signed_area(xf, zf)) == -1
+                    # The file runs clockwise; the wall is turned round to GPEC's counter-clockwise θ
+                    @test sign(signed_area(xf, zf)) == -1 && sign(signed_area(wall.x, wall.z)) == 1
                     @test all(isapprox.(((wall.x .- 1.7) ./ 0.6) .^ 2 .+ (wall.z ./ 0.9) .^ 2, 1.0; atol=1e-3))
 
-                    # npts == mtheta: points kept exactly
+                    # npts == mtheta: points kept exactly, in reversed order from the first
                     xf, zf = write_ellipse(path, 16)
                     wall = VAC.WallGeometry(inputs, plasma_surf, WallShapeSettings(; shape=path, equal_arc_wall=false))
-                    @test wall.x == xf && wall.z == zf
+                    @test wall.x == [xf[1]; reverse(xf[2:end])] && wall.z == [zf[1]; reverse(zf[2:end])]
 
                     # Relative paths resolve against the base directory
                     @test VAC.resolve_wall_shape("wall.dat", dir) == path
