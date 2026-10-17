@@ -472,6 +472,7 @@ using TOML
         inputs["ForceFreeStates"]["verbose"] = false
         inputs["ForceFreeStates"]["integrator"] = "riccati"
         inputs["ForceFreeStates"]["write_outputs_to_HDF5"] = false
+        inputs["Equilibrium"]["profile_source"] = "values"   # the pins below were set with F, P from the g-file values
         intr = GeneralizedPerturbedEquilibrium.ForceFreeStates.ForceFreeStatesInternal(; dir_path=ex)
         ctrl = GeneralizedPerturbedEquilibrium.ForceFreeStates.ForceFreeStatesControl(;
             (Symbol(k) => v for (k, v) in inputs["ForceFreeStates"])...)
