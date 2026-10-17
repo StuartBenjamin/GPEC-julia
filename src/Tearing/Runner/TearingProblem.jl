@@ -42,8 +42,8 @@ TearingProblem(ffs::ForceFreeStatesResult; kwargs...) =
 # Kinetic profiles from the splines attached to the equilibrium, in the layer builders'
 # convention: temperatures back in eV, `omega` the E×B rotation, and the per-surface
 # diamagnetic inputs zeroed (they are recomputed from equilibrium gradients downstream,
-# exactly as the file loader does). χ profiles are not carried by the attachment, so the
-# scalar model fallbacks apply.
+# exactly as the file loader does). χ and Z_eff profiles are not carried by the attachment,
+# so the scalar fallbacks apply.
 function _profiles_from_equilibrium(kp)
     xs = kp.xs
     E_CHG = Utilities.PhysicalConstants.E_CHG
@@ -55,7 +55,20 @@ function _profiles_from_equilibrium(kp)
             omega=[kp.omegaE_spline(ψ) for ψ in xs],
             omega_e=zeros(length(xs)),
             omega_i=zeros(length(xs))),
-        chi_perp=nothing, chi_tor=nothing)
+        chi_perp=nothing, chi_tor=nothing, zeff=nothing, zeff_source=:scalar)
+end
+
+# Z_eff(ψ) from the loaded profiles (the file's zeff, else its n_i/n_e closure), else the
+# scalar `control.zeff`; logs which source it used.
+function _zeff(loaded, control)
+    if loaded.zeff_source === :scalar
+        @warn "SLAYER: no usable zeff or n_i profile (dataset absent or all-zero); " *
+              "using the scalar control.zeff = $(control.zeff) at every surface."
+        return control.zeff
+    end
+    zeff_origin = loaded.zeff_source === :file ? "zeff profile" : "n_i/n_e with zimp = $(control.zimp)"
+    @info "SLAYER: Z_eff(ψ) from the kinetic file's $zeff_origin"
+    return loaded.zeff
 end
 
 # Per-surface parameter building and the dispatch tag, keyed on the user-facing model
@@ -68,7 +81,7 @@ _tearing_tag(::SLAYER) = InnerLayer.SLAYERModel(; variant=:fitzpatrick)
 function _tearing_params(::GGJ, equil, surfaces, loaded, control)
     return build_ggj_inputs(equil, surfaces, loaded.profiles;
         mu_i=control.mu_i,
-        zeff=control.zeff,
+        zeff=_zeff(loaded, control),
         resistivity_model=_build_resistivity_model(control.resistivity_model),
         lnLambda_form=control.lnLambda_form)
 end
@@ -86,7 +99,7 @@ function _tearing_params(model::SLAYER, equil, surfaces, loaded, control)
     return build_slayer_inputs(equil, surfaces, loaded.profiles;
         bt=control.bt,
         mu_i=control.mu_i,
-        zeff=control.zeff,
+        zeff=_zeff(loaded, control),
         chi_perp=chi_perp,
         chi_tor=chi_tor,
         dr_val=control.dr_val,
