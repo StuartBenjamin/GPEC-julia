@@ -6,16 +6,14 @@
 Eigenvalues λ = tr/2 ∓ √(tr²/4 − det) of one resonant 2×2 M₀ block.
 α = √(tr²/4 − det) is the Mercier half-separation. Powers are sig·λ, big solution
 (more negative real part) first. A traceless block returns α = √(−det) and (−α, +α).
+When tr²/4 − det is negative (Mercier-unstable), α is taken with Im α > 0, so both sides
+of the surface get the same α and the same big root whatever the round-off sign.
 """
 function resonant_block_exponents(m0::AbstractMatrix, sig::Real)
     tr = m0[1, 1] + m0[2, 2]
     det = m0[1, 1] * m0[2, 2] - m0[2, 1] * m0[1, 2]
-    # Traceless path uses the old √(−det) operations, so a zero trace stays bitwise identical.
-    if tr == 0
-        α = sqrt(-ComplexF64(det))
-        return α, -α, α
-    end
-    α = sqrt(tr * tr / 4 - det)
+    α = sqrt(ComplexF64(tr * tr / 4 - det))
+    abs(real(α)) <= 64 * Base.eps(Float64) * abs(α) && (α = ComplexF64(0, abs(imag(α))))
     p_minus = sig * (tr / 2 - α)
     p_plus = sig * (tr / 2 + α)
     # Equal real parts: sig ≥ 0 keeps big = sig·(tr/2 − α).
@@ -26,16 +24,10 @@ function resonant_block_exponents(m0::AbstractMatrix, sig::Real)
     end
 end
 
-# Scale columns by dpsi^power. Opposed powers stay /dpsi^α and *dpsi^α, not bitwise dpsi^(−α).
+# Scale the big and small resonant columns by dpsi^power.
 function _apply_column_powers!(big_cols, small_cols, p_big, p_small, dpsi)
-    if p_big == -p_small
-        pfac = dpsi^p_small
-        big_cols ./= pfac
-        small_cols .*= pfac
-    else
-        big_cols .*= dpsi^p_big
-        small_cols .*= dpsi^p_small
-    end
+    big_cols .*= dpsi^p_big
+    small_cols .*= dpsi^p_small
 end
 
 """
@@ -107,6 +99,11 @@ function compute_sing_asymptotics(
         m0mat_block = m0mat[(2*(i-1)+1):(2*i), (2*(i-1)+1):(2*i)]
         alpha_i, p_big, p_small = resonant_block_exponents(m0mat_block, sig)
         alpha[i] = alpha_i
+        # The assembled block's trace is ideally zero; a large one flags a non-converged block.
+        block_tr = m0mat_block[1, 1] + m0mat_block[2, 2]
+        abs(block_tr) / 2 > 1e-3 * abs(alpha_i) &&
+            @warn @sprintf("Resonant M₀ block at ψ=%.6f, m=%d (sig=%+.0f): |tr|/2 = %.3e is not small against |α| = %.3e",
+                singp.psifac, singp.m[i], sig, abs(block_tr) / 2, abs(alpha_i))
         r1_i = r1[i]
         power[r1_i] = p_big
         power[r1_i+intr.numpert_total] = p_small
@@ -133,8 +130,10 @@ function compute_sing_asymptotics(
         msg *= @sprintf("  m0mat(1,2)= %+.12e %+.12ei\n", real(m0mat[1, 2]), imag(m0mat[1, 2]))
         msg *= @sprintf("  m0mat(2,1)= %+.12e %+.12ei\n", real(m0mat[2, 1]), imag(m0mat[2, 1]))
         msg *= @sprintf("  m0mat(2,2)= %+.12e %+.12ei\n", real(m0mat[2, 2]), imag(m0mat[2, 2]))
-        di = m0mat[1, 1]*m0mat[2, 2] - m0mat[2, 1]*m0mat[1, 2]
-        msg *= @sprintf("  di= %+.12e, alpha= %+.12e %+.12ei\n", real(di), real(alpha[1]), imag(alpha[1]))
+        block_det = m0mat[1, 1]*m0mat[2, 2] - m0mat[2, 1]*m0mat[1, 2]
+        block_tr = m0mat[1, 1] + m0mat[2, 2]
+        msg *= @sprintf("  det= %+.12e, tr= %+.12e %+.12ei\n", real(block_det), real(block_tr), imag(block_tr))
+        msg *= @sprintf("  alpha= %+.12e %+.12ei\n", real(alpha[1]), imag(alpha[1]))
         msg *= @sprintf("  psifac= %+.12e, r1=%d, ipert0=%d\n", singp.psifac, r1[1], ipert0)
         msg *= @sprintf("  vmat(ip,ip,2,0)= %+.8e %+.8ei\n", real(vmat[ipert0, ipert0, 2, 1]), imag(vmat[ipert0, ipert0, 2, 1]))
         msg *= @sprintf("  vmat(ip,ip+N,2,0)= %+.8e %+.8ei\n", real(vmat[ipert0, ipert0+N, 2, 1]), imag(vmat[ipert0, ipert0+N, 2, 1]))
