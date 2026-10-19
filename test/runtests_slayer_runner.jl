@@ -1,9 +1,7 @@
 @testset "Runner: Control + TearingProblem + HDF5 output" begin
     using GeneralizedPerturbedEquilibrium
     using GeneralizedPerturbedEquilibrium.InnerLayer
-    # The InnerLayer submodules GGJ/SLAYER shadow the top-level model configs under a bare
-    # `using`; import the configs explicitly so the API names win the ambiguity.
-    using GeneralizedPerturbedEquilibrium: GGJ, SLAYER, TearingProblem, solve
+    using GeneralizedPerturbedEquilibrium: GGJModel, SLAYERModel, TearingProblem, solve
     using GeneralizedPerturbedEquilibrium.Dispersion
     using GeneralizedPerturbedEquilibrium.Runner
     using HDF5
@@ -103,25 +101,24 @@
         c = SLAYERControl(; enabled=true, profile_file="unused.h5")
         no_surfaces = (equil=nothing, surfaces=GeneralizedPerturbedEquilibrium.ForceFreeStates.SingType[],
             delta_prime=nothing)
-        r = solve(TearingProblem(no_surfaces, c), SLAYER())
+        r = solve(TearingProblem(no_surfaces, c), SLAYERModel())
         @test isempty(r.params)
 
         # A disabled control never looks at the result at all.
-        r_off = solve(TearingProblem(no_surfaces, SLAYERControl(; enabled=false, profile_file="unused.h5")), SLAYER())
+        r_off = solve(TearingProblem(no_surfaces, SLAYERControl(; enabled=false, profile_file="unused.h5")), SLAYERModel())
         @test r_off.enabled == false
     end
 
-    @testset "deck model vocabulary maps onto typed models" begin
-        @test Runner._tearing_tag(SLAYER()) isa InnerLayer.SLAYERModel
-        @test Runner._tearing_tag(GGJ(; solver=:shooting)) isa InnerLayer.GGJModel{:shooting}
-        @test Runner._tearing_tag(GGJ(; solver=:galerkin)) isa InnerLayer.GGJModel{:galerkin}
-        # The :ray backend has no tearing dispersion path.
-        @test_throws ErrorException Runner._tearing_tag(GGJ())
+    @testset "GGJ tearing errors until its growth-rate extraction exists" begin
+        @test SLAYERControl(; inner_model=:ggj_ray).inner_model === :ggj_ray
+        no_surfaces = (equil=nothing, surfaces=GeneralizedPerturbedEquilibrium.ForceFreeStates.SingType[],
+            delta_prime=nothing, dir_path=".")
+        @test_throws ErrorException solve(TearingProblem(no_surfaces, SLAYERControl(; enabled=true, profile_file="unused.h5")), GGJModel())
     end
 
     # Δ′ is unified across formalisms, so a Galerkin run feeds SLAYER exactly as a Riccati one
     # does: `result.delta_prime.matrix` is populated and already sized to the surface list, which
-    # is the predicate `run_slayer` uses to accept it over the per-surface diagonal stub.
+    # is the predicate the tearing solve uses to accept it over the per-surface diagonal stub.
     @testset "Galerkin-fed SLAYER: gal Δ' drives the coupled solve" begin
         mktempdir() do dir
             deck = joinpath(@__DIR__, "..", "examples", "LAR_ideal_match_test")
@@ -258,6 +255,7 @@
             store_scan=true)
         r = run_slayer_from_inputs(SLAYERModel(; variant=:fitzpatrick), params, dp, c;
             rational_psi=[0.45, 0.72], rational_q=[2.0, 3.0])
+        @test r.model === SLAYERModel(; variant=:fitzpatrick)
 
         mktemp() do path, io
             close(io)
@@ -272,6 +270,7 @@
                 isempty(viol) || @error "metadata contract violations in Tearing/" viol
                 @test isempty(viol)
                 @test attrs(f["Tearing"])["layer_model"] == "slayer"
+                @test attrs(f["Tearing"])["inner_model"] == "slayer_fitzpatrick"
             end
 
             h5open(path, "r") do f

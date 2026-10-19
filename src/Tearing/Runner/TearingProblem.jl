@@ -1,105 +1,56 @@
 # TearingProblem.jl
 #
-# The free-eigenvalue tearing solve in the problem/model grammar: a TearingProblem holds a
-# finished force-free-states result and the matching-procedure control; the inner-layer
-# model passed to `solve` evaluates Δ(Q), and the growth rate is root-found where
-# Δ_inner(Q) = Δ'_outer. This file IS the orchestration (profiles → per-surface parameters
-# → Δ' conditioning → the scan core); the model stays a typed object end-to-end, and the
-# deck's `inner_model` string is translated to a model at the deck boundary, never below.
+# Tearing growth rates from a finished solve: root-find Δ_inner(Q) = Δ′_outer per surface.
 
 """
     TearingProblem(ffs; kwargs...)
 
-The free-eigenvalue tearing problem posed on a finished force-free-states solve: hold the
-outer Δ′ fixed and root-find the growth rate where the inner-layer response matches it.
-This is the WHAT; the inner-layer model passed to [`solve`](@ref) — `SLAYER()` or
-`GGJ(; solver=:shooting|:galerkin)` — is the HOW. Keyword arguments are
-[`SLAYERControl`](@ref) fields (the matching procedure: scan mode and Q-domain, coupling
-mode, critical-Δ convention, extraction filters, plasma-composition knobs, and the
-`profile_file` override); `enabled` is implied by posing the problem.
-
-Kinetic profiles come from `profile_file` when it is set, otherwise from the profiles
-attached to the equilibrium (`ffs.equil.kinetic`). The outer Δ′ comes from
-`ffs.delta_prime`; a result without one (or with the wrong surface count) falls back to the
-per-surface scalar stubs with a loud warning, exactly as the deck path always has.
+Tearing-mode growth rates from a finished force-free-states solve: hold the outer Δ′ fixed
+and find the growth rate at which the inner layer matches it. Solve with
+`solve(prob, SLAYERModel())`; GGJ growth-rate extraction is not implemented yet. Keywords are
+[`SLAYERControl`](@ref) fields, the `[SLAYER]` deck knobs; kinetic profiles come from
+`profile_file`. Without a full Δ′ matrix the per-surface Δ′ stubs are used, with a warning.
 
 ## Fields
-
-  - `ffs` - The force-free-states result supplying the equilibrium, surfaces and Δ′.
-  - `control::SLAYERControl` - The matching-procedure control (single source of truth; its
-    `inner_model` key is deck vocabulary resolved at the deck boundary and never read here).
+  - `ffs` - The finished solve; duck-typed on `equil`, `surfaces`, `delta_prime`, `dir_path`, so tests can use stand-ins.
+  - `control::SLAYERControl` - The tearing knobs.
 """
-# The result field is deliberately duck-typed (anything carrying equil/surfaces/
-# delta_prime/dir_path), so tests can drive the solve with lightweight stand-ins.
 struct TearingProblem{R}
     ffs::R
     control::SLAYERControl
 end
 
-TearingProblem(ffs::ForceFreeStatesResult; kwargs...) =
-    TearingProblem(ffs, SLAYERControl(; enabled=true, kwargs...))
-
-# Kinetic profiles from the splines attached to the equilibrium, in the layer builders'
-# convention: temperatures back in eV, `omega` the E×B rotation, and the per-surface
-# diamagnetic inputs zeroed (they are recomputed from equilibrium gradients downstream,
-# exactly as the file loader does). χ and Z_eff profiles are not carried by the attachment,
-# so the scalar fallbacks apply.
-function _profiles_from_equilibrium(kp)
-    xs = kp.xs
-    E_CHG = Utilities.PhysicalConstants.E_CHG
-    return (profiles=KineticProfiles(;
-            psi=xs,
-            n_e=[kp.ne_spline(ψ) for ψ in xs],
-            T_e=[kp.Te_spline(ψ) / E_CHG for ψ in xs],
-            T_i=[kp.Ti_spline(ψ) / E_CHG for ψ in xs],
-            omega=[kp.omegaE_spline(ψ) for ψ in xs],
-            omega_e=zeros(length(xs)),
-            omega_i=zeros(length(xs))),
-        chi_perp=nothing, chi_tor=nothing, zeff=nothing, zeff_source=:scalar)
+function TearingProblem(ffs::ForceFreeStatesResult; kwargs...)
+    haskey(kwargs, :inner_model) && error("TearingProblem: the inner-layer model is the solve argument; drop inner_model")
+    return TearingProblem(ffs, SLAYERControl(; enabled=true, kwargs...))
 end
 
-# Z_eff(ψ) from the loaded profiles (the file's zeff, else its n_i/n_e closure), else the
-# scalar `control.zeff`; logs which source it used.
-function _zeff(loaded, control)
-    if loaded.zeff_source === :scalar
-        @warn "SLAYER: no usable zeff or n_i profile (dataset absent or all-zero); " *
-              "using the scalar control.zeff = $(control.zeff) at every surface."
-        return control.zeff
-    end
-    zeff_origin = loaded.zeff_source === :file ? "zeff profile" : "n_i/n_e with zimp = $(control.zimp)"
-    @info "SLAYER: Z_eff(ψ) from the kinetic file's $zeff_origin"
-    return loaded.zeff
-end
-
-# Per-surface parameter building and the dispatch tag, keyed on the user-facing model
-# config. GGJ is genuinely toroidal/ψ-based; SLAYER is the slab layer with χ transport.
-_tearing_tag(model::GGJ) =
-    model.solver in (:shooting, :galerkin) ? InnerLayer.GGJModel(; solver=model.solver) :
-    error("tearing with GGJ needs solver=:shooting or :galerkin (got :$(model.solver); the :ray backend has no tearing dispersion path)")
-_tearing_tag(::SLAYER) = InnerLayer.SLAYERModel(; variant=:fitzpatrick)
-
-function _tearing_params(::GGJ, equil, surfaces, loaded, control)
-    return build_ggj_inputs(equil, surfaces, loaded.profiles;
-        mu_i=control.mu_i,
-        zeff=_zeff(loaded, control),
-        resistivity_model=_build_resistivity_model(control.resistivity_model),
-        lnLambda_form=control.lnLambda_form)
-end
-
-function _tearing_params(model::SLAYER, equil, surfaces, loaded, control)
+function _tearing_params(::SLAYERModel, equil, surfaces, loaded, control)
     # `equil.config.b0exp` is a NORMALIZATION (commonly exactly 1.0), not the toroidal
-    # field: `control.bt = nothing` makes build_slayer_inputs compute the physical
-    # B_T = F(psi)/(2*pi*R_0) per surface from the equilibrium's F-spline.
-    # χ⊥/χ_φ from the kinetic file when present, else the model's scalar fallbacks.
-    chi_perp = loaded.chi_perp === nothing ? model.chi_perp : loaded.chi_perp
-    chi_tor = loaded.chi_tor === nothing ? model.chi_tor : loaded.chi_tor
+    # field, so substituting it here silently ran the layer physics at B_T = 1 T. Pass the
+    # control value through instead: `nothing` makes build_slayer_inputs compute the
+    # physical B_T = F(psi)/(2*pi*R_0) per surface from the equilibrium's F-spline, which is
+    # what its docstring already prescribes.
+    bt = control.bt
+    # χ⊥/χ_φ from the kinetic file when present, else the scalar fallbacks.
+    chi_perp = loaded.chi_perp === nothing ? control.chi_perp : loaded.chi_perp
+    chi_tor = loaded.chi_tor === nothing ? control.chi_tor : loaded.chi_tor
     (loaded.chi_perp === nothing || loaded.chi_tor === nothing) && @warn(
         "SLAYER: no usable chi_e/chi_phi profile(s) (dataset absent or all-zero); " *
         "using the scalar chi_perp/chi_tor fallback for the missing one(s).")
+    # Z_eff(ψ) from the kinetic file when it carries n_i, else the scalar fallback.
+    zeff = loaded.zeff === nothing ? control.zeff : loaded.zeff
+    if loaded.zeff_source === :scalar
+        @warn "SLAYER: kinetic file has no usable zeff or n_i profile (dataset absent or all-zero); " *
+              "using the scalar control.zeff = $(control.zeff) at every surface."
+    else
+        zeff_origin = loaded.zeff_source === :file ? "zeff profile" : "n_i/n_e with zimp = $(control.zimp)"
+        @info "SLAYER: Z_eff(ψ) from the kinetic file's $zeff_origin"
+    end
     return build_slayer_inputs(equil, surfaces, loaded.profiles;
-        bt=control.bt,
+        bt=bt,
         mu_i=control.mu_i,
-        zeff=_zeff(loaded, control),
+        zeff=zeff,
         chi_perp=chi_perp,
         chi_tor=chi_tor,
         dr_val=control.dr_val,
@@ -113,11 +64,7 @@ end
 """
     solve(prob::TearingProblem, model) -> SLAYERResult
 
-Run the tearing analysis: source the kinetic profiles, build the per-surface layer
-parameters for `model`, condition the outer Δ′ (full matrix when the result carries one,
-the per-surface diagonal stub fallback otherwise), and root-find the growth rates with the
-scan core. `model` is a user-facing inner-layer config — [`SLAYER`](@ref) or
-[`GGJ`](@ref) with a `:shooting`/`:galerkin` backend.
+Tearing growth rates per surface with the inner layer of `model`.
 """
 function CommonSolve.solve(prob::TearingProblem, model::InnerLayer.InnerLayerModel)
     control = prob.control
@@ -125,18 +72,12 @@ function CommonSolve.solve(prob::TearingProblem, model::InnerLayer.InnerLayerMod
     equil = ffs.equil
     surfaces = ffs.surfaces
 
+    model isa SLAYERModel || error("TearingProblem: GGJ tearing growth rates are not implemented yet; use SLAYERModel()")
     validate(control)
     control.enabled || return empty_slayer_result(control)
     isempty(surfaces) && return empty_slayer_result(control)
 
-    loaded = if !isempty(control.profile_file)
-        _load_profiles(control, ffs.dir_path)
-    elseif equil.kinetic !== nothing
-        _profiles_from_equilibrium(equil.kinetic)
-    else
-        error("TearingProblem: no kinetic profiles — set profile_file, or attach profiles " *
-              "to the equilibrium with attach_kinetic_profiles!(equil, file)")
-    end
+    loaded = _load_profiles(control, ffs.dir_path)
 
     params = _tearing_params(model, equil, surfaces, loaded, control)
 
@@ -169,6 +110,6 @@ function CommonSolve.solve(prob::TearingProblem, model::InnerLayer.InnerLayerMod
 
     rational_psi = Float64[surfaces[p.ising].psifac for p in params]
     rational_q = Float64[surfaces[p.ising].q for p in params]
-    return run_slayer_from_inputs(_tearing_tag(model), params, dp, control;
+    return run_slayer_from_inputs(model, params, dp, control;
         rational_psi=rational_psi, rational_q=rational_q)
 end

@@ -151,7 +151,7 @@ gpec.toml.
   - `HDF5_filename::String` - Name of HDF5 output file
   - `save_interval::Int` - Save every Nth ODE step (1=all). Always saves near rational surfaces. Default `1`: PerturbedEquilibrium and KineticForces interpolate ξ(ψ) between saved steps, so their accuracy follows the saved-step density.
   - `force_termination::Bool` - Terminate after force-free states (skip perturbed equilibrium calculations)
-  - `integrator::String` - Which formalism integrates the Euler-Lagrange system. `"forward"` sweeps the plasma serially with Gaussian reduction and returns `u_store` / `du_store` / `xi_s_store` dense in the axis (EL) basis — the only convention PerturbedEquilibrium and FieldReconstruction consume correctly, and the only path that supports `kinetic_factor > 0`. `"riccati"` (default) runs the chunked fundamental-matrix propagator driver (Glasser 2018 Phys. Plasmas 25, 032507): chunks are integrated independently from identity initial conditions and assembled serially with Riccati-style crossings, which is the only way to obtain the singular-surface Δ' matrix for the tearing-mode solvers downstream, but leaves `u_store` as sparse chunk-endpoint Riccati states, so dense ξ profiles are unavailable. `"galerkin"` solves the same Euler-Lagrange system variationally instead of by radial ODE integration — the RDCON outer-region singular Galerkin method (Glasser, Wang & Park 2016 Phys. Plasmas 23, 112506), which discretizes the displacement on packed Hermite-cubic elements and solves one global banded system — producing the resistive Δ′ matrix (the RPEC inner-layer match is a POST-SOLVE transformation: `gal_match_flag` routes the finished solve through it); it computes its own vacuum response and returns no free-boundary energies, and does not support `kinetic_factor > 0`. Requires `singfac_min != 0` for `"riccati"`.
+  - `integrator::String` - Which formalism integrates the Euler-Lagrange system. `"forward"` sweeps the plasma serially with Gaussian reduction and returns `u_store` / `du_store` / `xi_s_store` dense in the axis (EL) basis — the only convention PerturbedEquilibrium and FieldReconstruction consume correctly, and the only path that supports `kinetic_factor > 0`. `"riccati"` (default) runs the chunked fundamental-matrix propagator driver (Glasser 2018 Phys. Plasmas 25, 032507): chunks are integrated independently from identity initial conditions and assembled serially with Riccati-style crossings, which is the only way to obtain the singular-surface Δ' matrix for the tearing-mode solvers downstream, but leaves `u_store` as sparse chunk-endpoint Riccati states, so dense ξ profiles are unavailable. `"galerkin"` solves the same Euler-Lagrange system variationally instead of by radial ODE integration — the RDCON outer-region singular Galerkin method (Glasser, Wang & Park 2016 Phys. Plasmas 23, 112506), which discretizes the displacement on packed Hermite-cubic elements and solves one global banded system — producing the resistive Δ′ matrix and, when `gal_match_flag` is set, the RPEC inner-layer-matched ξ; it computes its own vacuum response and returns no free-boundary energies, and does not support `kinetic_factor > 0`. Requires `singfac_min != 0` for `"riccati"`.
   - `nchunks::Int` - Target number of Riccati integration chunks. `0` (the default) derives the count from problem structure alone: `max(2·msing + 3, 8·(msing + 1) + msing)`, enough sub-chunks per segment to keep the accumulated propagator products well-conditioned. An explicit value below `2·msing + 3` is clamped up with a warning. Chunk sizing never consults `Threads.nthreads()`, so Riccati outputs are identical whatever thread count `julia -t` provides; threads only change wall-clock.
   - `extended_precision_bvp::Bool` - Solve the Δ' BVP and its PEST3 combination in `Complex{Double64}` (~31 digits). Default `false` (Float64, 1.5–5.4× faster on large matrices); set `true` to check Float64 at small `singfac_min`, where the four-term combination loses digits.
 """
@@ -209,20 +209,20 @@ gpec.toml.
     gal_sing_order_ceiling::Bool = true  # auto-raise order by ceil(2·Re(α)) per surface (high Mercier index)
     gal_rpec_flag::Bool = false     # append mpert coil-response columns to the Δ′ solve (RDCON rpec_flag): unit boundary sources whose plasma response is recorded; needed for the driven (resistive perturbed-equilibrium) Δ_gw
     gal_edge_onesided::Bool = false # pack the two end intervals one-sided toward their single rational end (vs the Fortran symmetric "both" pack); avoids the fine edge cell that inflates cond(A). Default false = faithful to gal.f.
-    gal_cut_solution::Bool = false  # also reconstruct the cut solution (xi_cut/cut_range) needed for the composite inner-region profiles of a later match; implied by gal_match_flag
+    gal_cut_solution::Bool = false  # also keep the cut solution for a later match's composite inner profiles; implied by gal_match_flag
     # --- DRIVEN (RPEC) outer↔inner asymptotic matching (rmatch match_rpec port) ---
     gal_match_flag::Bool = false    # enable the RPEC inner-layer matching: solve the coil-driven matched ξ(ψ) from the gal Δ′ + the inner-layer Δ(Q). Requires gal_rpec_flag=true.
     gal_ideal_flag::Bool = false    # within the match, build the IDEAL solution: skip the inner-layer Δ, use bare coil columns (cout=0). Mirrors Fortran rmatch coil%ideal_flag (the EL reference). eta/rho/rotation ignored.
     gal_inner_solver::String = "ray" # inner-layer Δ backend for the match: "ray" (rotated-contour collocation, certified Δ at the optimal θ = arg(Q)/4; robust for |Q| ≳ 1) or "galerkin" (Hermite-cubic inps; drifts for |Q| ≳ 1)
-    # --- Inner-layer "galerkin" backend knobs (used only when gal_inner_solver = "galerkin") ---
-    gal_inner_xfac::Float64 = 10.0  # asymptotic-matching radius multiplier (inps_xfac: xmax × 10)
-    gal_inner_nx::Int = 1280        # inner-layer grid cells (128 · xfac in the reference)
-    gal_inner_nq::Int = 5           # quadrature order per cell
-    gal_inner_cutoff::Int = 5       # cells carrying the large solution as driving term
-    gal_inner_kmax::Int = 8         # large-x asymptotic series order (↔ order_pow)
+    # --- Inner-layer "galerkin" backend overrides (gal_inner_solver = "galerkin"; unset keeps the backend default) ---
+    gal_inner_xfac::Union{Nothing,Float64} = nothing  # asymptotic-matching radius multiplier
+    gal_inner_nx::Union{Nothing,Int} = nothing        # inner-layer grid cells
+    gal_inner_nq::Union{Nothing,Int} = nothing        # quadrature order per cell
+    gal_inner_cutoff::Union{Nothing,Int} = nothing    # cells carrying the large solution as driving term
+    gal_inner_kmax::Union{Nothing,Int} = nothing      # large-x asymptotic series order
     gal_eta::Vector{Float64} = Float64[]      # per-surface resistivity η (length msing, core→edge); Fortran rmatch `eta`
     gal_rho::Vector{Float64} = Float64[]      # per-surface mass density ρ [kg/m³] (length msing, core→edge); Fortran rmatch `massden`
     gal_rotation::Vector{Float64} = Float64[] # per-surface rotation frequency f [Hz] (length msing, core→edge); forced eigenvalue γ_s = 2πi·n·f. Fortran rmatch `rotation`
-    gal_gamma::Float64 = 5 / 3       # ratio of specific heats Γ for the resistive-layer coefficients (resist_eval G term)
+    gal_gamma::Float64 = 5 / 3       # ratio of specific heats Γ for the resistive-layer coefficients (ggj_parameters G term)
     frobenius_psi_max::Float64 = 0.0
 end

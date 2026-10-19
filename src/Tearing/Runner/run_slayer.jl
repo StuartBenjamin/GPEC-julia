@@ -1,13 +1,7 @@
 # run_slayer.jl
 #
-# The tearing-analysis scan core and its supporting pieces: profile loading, the
-# ψ_N → r_s Δ' reference conversion for slab layers, and `run_slayer_from_inputs`,
-# which takes the inner-layer model as a typed object plus pre-built per-surface
-# parameters and a Δ' matrix, runs the requested scan mode, extracts growth rates
-# by contour intersection, and returns a `SLAYERResult`. The orchestration that
-# builds those inputs from a finished solve is the `TearingProblem` solve
-# (TearingProblem.jl); driving the core directly keeps the end-to-end code covered
-# without requiring a full equilibrium solve in every test.
+# Tearing scan core: profile loading, the slab Δ′ reference conversion, and
+# `run_slayer_from_inputs` (scan + growth-rate extraction). `TearingProblem` builds its inputs.
 
 # ---------------------------------------------------------------------
 # Profile loading
@@ -71,6 +65,22 @@ function _load_profiles(control::SLAYERControl, dir_path::AbstractString)
     end
     zeff_source = _usable(data.zeff) ? :file : zeff === nothing ? :scalar : :closure
     return (profiles=profiles, chi_perp=chi_perp, chi_tor=chi_tor, zeff=zeff, zeff_source=zeff_source)
+end
+
+# ---------------------------------------------------------------------
+# Inner-layer model factory
+# ---------------------------------------------------------------------
+function _build_inner_model(name::Symbol)
+    if name === :slayer_fitzpatrick
+        return SLAYERModel(; variant=:fitzpatrick)
+    elseif name === :ggj_ray
+        return GGJModel(; solver=:ray)
+    elseif name === :ggj_shooting
+        return GGJModel(; solver=:shooting)
+    elseif name === :ggj_galerkin
+        return GGJModel(; solver=:galerkin)
+    end
+    throw(ArgumentError("_build_inner_model: unknown model $name"))
 end
 
 # Map the TOML resistivity_model symbol to a NeoResistivityModel instance.
@@ -233,7 +243,7 @@ function run_slayer_from_inputs(model::InnerLayer.InnerLayerModel,
                 "run_slayer: a $(typeof(model)) inner model requires " *
                 "$(expected_P) per-surface parameters, but got eltype " *
                 "$(eltype(params)). Build inputs with the matching builder " *
-                "(build_slayer_inputs for SLAYER, build_ggj_inputs for GGJ).")
+                "(build_slayer_inputs for SLAYER, ggj_parameters for GGJ).")
         )
 
     # Slab-layer path: convert Δ' from its ψ_N reference length to the
@@ -361,7 +371,7 @@ function run_slayer_from_inputs(model::InnerLayer.InnerLayerModel,
         control.store_scan && push!(scan_data_list, scan)
     end
 
-    return SLAYERResult(true, control, params, rational_psi, rational_q, dp,
+    return SLAYERResult(true, control, model, params, rational_psi, rational_q, dp,
         Q_root, omega_Hz, gamma_Hz,
         per_surface_extraction, coupled_extraction,
         layer_widths, scan_data_list)
