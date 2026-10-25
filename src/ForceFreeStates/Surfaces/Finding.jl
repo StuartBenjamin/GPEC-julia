@@ -112,9 +112,10 @@ well-separated inner region. The cap only ever narrows the domain; one beyond `p
 
 If `set_psilim_via_dmlim` is true, `qlim` is then moved to `(last rational + dmlim) / n` and
 stepped back by `1/n` until it no longer exceeds the bound above, so `dmlim` never extends the
-domain past `qmax`, `qhigh` or the cap. A bound that falls exactly on, or less than `dmlim / n`
-above, a rational excludes that rational. If `qlim < qmax`, a Newton iteration finds the
-corresponding `psilim` to integrate to.
+domain past `qmax`, `qhigh`, the cap or the edge q (`qmax` can lie inside, e.g. at the axis).
+A bound that falls exactly on, or less than `dmlim / n` above, a rational excludes that rational.
+If `qlim < qmax`, a Newton iteration from the outermost crossing finds the corresponding `psilim`
+to integrate to.
 
 Note that the Newton iteration will be triggered if either `set_psilim_via_dmlim` is true
 or `ctrl.qhigh < equil.params.qmax`. Otherwise, the equilibrium edge values are used.
@@ -156,9 +157,9 @@ function sing_lim!(intr::ForceFreeStatesInternal, ctrl::ForceFreeStatesControl, 
         @info "Setting psilim via dmlim: initial qlim = $(@sprintf("%.3f", intr.qlim)), dmlim = $(@sprintf("%.3f", ctrl.dmlim))"
         # Normalize dmlim ∈ [0,1)
         dmlim = mod(ctrl.dmlim, 1.0)
-        # qlim already holds min(qmax, qhigh, overlap cap); dmlim must never step past any of them.
-        qlim_bound = intr.qlim
-        intr.qlim = (trunc(Int, intr.nlow * intr.qlim) + dmlim) / intr.nlow
+        # qlim already holds min(qmax, qhigh, overlap cap); dmlim must never step past any of them, nor the edge q.
+        qlim_bound = min(intr.qlim, profiles.q_spline.y[end])
+        intr.qlim = (trunc(Int, intr.nlow * qlim_bound) + dmlim) / intr.nlow
 
         # Step back one rational at a time until inside the bound, keeping the dmlim offset
         while intr.qlim > qlim_bound
@@ -168,9 +169,10 @@ function sing_lim!(intr::ForceFreeStatesInternal, ctrl::ForceFreeStatesControl, 
 
     # If set_psilim_via_dmlim decreased qlim or qhigh < qmax, we need to find the precise psilim via newton iteration
     if intr.qlim < equil.params.qmax
-        # Find nearest ψ index where q ≈ qlim
-        _, jpsi = findmin(abs.(profiles.q_spline.y .- intr.qlim))
-        jpsi = min(jpsi, length(profiles.xs) - 1)
+        # Start at the nearest ψ index at or outside the outermost grid interval holding qlim
+        q = profiles.q_spline.y
+        i0 = something(findlast(k -> (q[k] - intr.qlim) * (q[k+1] - intr.qlim) <= 0, 1:length(q)-1), 1)
+        jpsi = min(i0 - 1 + argmin(abs.(view(q, i0:length(q)) .- intr.qlim)), length(profiles.xs) - 1)
 
         hint = Ref(jpsi)
         intr.psilim = find_zero(
