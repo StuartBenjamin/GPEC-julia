@@ -34,7 +34,8 @@ Represents the propagator Φ(ψ₂,ψ₁) computed by integrating the EL ODE fro
 identity-block initial conditions:
 
   - `block_upper_ic`: result of integrating with IC = (I_N, 0_N)  (U₁ = I, U₂ = 0)
-  - `block_lower_ic`: result of integrating with IC = (0_N, I_N)  (U₁ = 0, U₂ = I)
+  - `block_lower_ic`: result of integrating with IC = (0_N, I_N)  (U₁ = 0, U₂ = I), the chunk's principal solution
+  - `principal_nzero`: zero crossings (det U₁ = 0) of the principal solution inside the chunk
 
 Applying the propagator to the current state `u_prev`:
 
@@ -45,8 +46,9 @@ Since each chunk starts from a bounded identity IC (rather than the accumulated 
 exponential growth within a chunk does not affect the conditioning of the overall
 assembly. This enables `Threads.@threads` parallel integration across all chunks.
 """
-struct ChunkPropagator
+mutable struct ChunkPropagator
     block_upper_ic::Array{ComplexF64,3}   # shape (N, N, 2) — result from IC = (I, 0)
     block_lower_ic::Array{ComplexF64,3}   # shape (N, N, 2) — result from IC = (0, I)
+    principal_nzero::Int
 end
-ChunkPropagator(N::Int) = ChunkPropagator(zeros(ComplexF64, N, N, 2), zeros(ComplexF64, N, N, 2))
+ChunkPropagator(N::Int) = ChunkPropagator(zeros(ComplexF64, N, N, 2), zeros(ComplexF64, N, N, 2), 0)
