@@ -196,6 +196,15 @@ end
         @test i.qlim <= qh
     end
 
+    # qmax inside the plasma (e.g. q peaking at the axis): the offset must not step past the edge q either.
+    q_edge = equil.profiles.q_spline.y[end]
+    peaked = deepcopy(equil)
+    peaked.params.qmax = q_edge + 1
+    i = _fresh()
+    sing_lim!(i, ctrl_dm, peaked)
+    @test i.qlim <= q_edge
+    @test i.qlim ≈ dm_base.qlim && i.psilim ≈ dm_base.psilim
+
     # No rational surface far enough below the bound leaves nothing to truncate at: a clear error, not a failed root find.
     # The offset puts the last rational's truncation point above qhigh and the one before it below q_min.
     qmin = equil.params.qmin

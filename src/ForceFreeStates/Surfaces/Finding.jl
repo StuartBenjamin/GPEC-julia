@@ -106,9 +106,10 @@ well-separated inner region. The cap only ever narrows the domain; one beyond `p
 
 If `truncate_at_rational_offset` is true, `qlim` is then moved to `(last rational + rational_offset_fraction) / n` and
 stepped back by `1/n` until it no longer exceeds the bound above, so `rational_offset_fraction` never extends the
-domain past `qmax`, `qhigh` or the cap. A bound that falls exactly on, or less than `rational_offset_fraction / n`
-above, a rational excludes that rational. If `qlim < qmax`, a Newton iteration finds the matching
-`psilim` (outer crossing on a reversed-shear profile); otherwise the equilibrium edge values are used.
+domain past `qmax`, `qhigh`, the cap or the edge q (`qmax` can lie inside, e.g. at the axis). A bound that falls
+exactly on, or less than `rational_offset_fraction / n` above, a rational excludes that rational. If `qlim < qmax`,
+a Newton iteration finds the matching `psilim` (outer crossing on a reversed-shear profile); otherwise the equilibrium
+edge values are used.
 """
 function sing_lim!(intr::ForceFreeStatesInternal, ctrl::ForceFreeStatesControl, equil::Equilibrium.PlasmaEquilibrium;
     psilim_cap::Union{Nothing,Real}=nothing)
@@ -143,8 +144,9 @@ function sing_lim!(intr::ForceFreeStatesInternal, ctrl::ForceFreeStatesControl, 
         @info "Setting psilim via rational_offset_fraction: initial qlim = $(@sprintf("%.3f", intr.qlim)), rational_offset_fraction = $(@sprintf("%.3f", ctrl.rational_offset_fraction))"
         # Normalize rational_offset_fraction ∈ [0,1)
         rational_offset_fraction = mod(ctrl.rational_offset_fraction, 1.0)
-        # qlim already holds min(qmax, qhigh, overlap cap); rational_offset_fraction must never step past any of them.
-        qlim_bound = intr.qlim
+        # qlim already holds min(qmax, qhigh, overlap cap); rational_offset_fraction must never step past any of them,
+        # nor the edge q (qmax can lie inside, e.g. at the axis).
+        qlim_bound = min(intr.qlim, profiles.q_spline.y[end])
         intr.qlim = (trunc(Int, intr.nlow * intr.qlim) + rational_offset_fraction) / intr.nlow
 
         # Step back one rational at a time until inside the bound, keeping the rational_offset_fraction offset
