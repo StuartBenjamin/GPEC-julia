@@ -1,15 +1,16 @@
 """
-    evaluate_stability_criterion!(odet, profiles) -> nzero
+    evaluate_stability_criterion!(odet, profiles; first_step=1) -> nzero
 
 Evaluate the stability criterion over the entire integration, counting the number of
 zero crossings of the critical eigenvalue which indicate instability. This acts as an
 outer wrapper for `check_for_zero_crossings!` since our in-memory integration allow
 this to be done post-integration rather than during like the Fortran. We update
 the `crit_store` in `odet` in place, and return the total number of zero crossings found.
+Only crossings after step `first_step` are counted; `crit_store` is filled at every step.
 If the W inverse matrix was non-Hermitian beyond tolerance at any integration steps,
 a warning is printed with the total count.
 """
-function evaluate_stability_criterion!(odet::OdeState, profiles::Equilibrium.ProfileSplines)
+function evaluate_stability_criterion!(odet::OdeState, profiles::Equilibrium.ProfileSplines; first_step::Int=1)
 
     # Initialization
     resize!(odet.crit_store, odet.step)
@@ -18,7 +19,7 @@ function evaluate_stability_criterion!(odet::OdeState, profiles::Equilibrium.Pro
 
     # Loop over integration steps, computing crit/checking for zero crossings
     for istep in 1:odet.step
-        zero_cross, nonherm = check_for_zero_crossings!(odet, profiles, istep)
+        zero_cross, nonherm = check_for_zero_crossings!(odet, profiles, istep; first_step)
         if zero_cross
             nzero += 1
         end
@@ -36,7 +37,7 @@ function evaluate_stability_criterion!(odet::OdeState, profiles::Equilibrium.Pro
 end
 
 """
-    check_for_zero_crossings!(odet, profiles, istep) -> zero_cross, nonherm
+    check_for_zero_crossings!(odet, profiles, istep; first_step=1) -> zero_cross, nonherm
 
 Check if the critical eigenvalue (`crit`), i.e. the smallest eigenvalue of W⁻¹, changed
 signs between a given integration step `istep` and the previous step. We first compute
@@ -51,13 +52,14 @@ can do it post-integration rather than during and don't directly handle file out
 
   - `profiles::ProfileSplines`: Profile splines containing equilibrium profiles
   - `istep::Int`: Current integration step index
+  - `first_step::Int`: Steps up to this one are not compared with their predecessor
 
 ### Returns
 
   - `zero_cross::Bool`: True if a physical zero crossing was detected
   - `nonherm::Bool`: True if W⁻¹ was non-Hermitian beyond tolerance
 """
-@with_pool pool function check_for_zero_crossings!(odet::OdeState, profiles::Equilibrium.ProfileSplines, istep::Int)
+@with_pool pool function check_for_zero_crossings!(odet::OdeState, profiles::Equilibrium.ProfileSplines, istep::Int; first_step::Int=1)
 
     # Compute smallest eigenvalue (crit) at current step
     # Use shared hint for O(1) interval lookup during sequential stability evaluation
@@ -70,7 +72,7 @@ can do it post-integration rather than during and don't directly handle file out
 
     # Check for zero crossing via change in sign of crit between current and previous step
     zero_cross = false
-    if istep > 1 && odet.crit_store[istep] * odet.crit_store[istep-1] < 0
+    if istep > first_step && odet.crit_store[istep] * odet.crit_store[istep-1] < 0
         crit = odet.crit_store[istep]
         crit_prev = odet.crit_store[istep-1]
         # Ensure the zero crossing is physical and not just numerical noise
@@ -143,4 +145,65 @@ construction but may accumulate numerical noise during integration.
     evals = eigvals!(Hermitian(wp_inverse))
     crit = evals[findmin(abs, evals)[2]]
     return crit, nonherm
+end
+
+"""
+    step_zero_crossings(u, u_prev, nneg_prev, direction) -> ncross, nneg
+
+Zero crossings of a solution over one ODE step from `u_prev` to `u`, taken in ψ direction `direction` (±1). With
+F̄ > 0 every crossing moves an eigenvalue of W⁻¹ upward in ψ through 0, so `nneg`, the number of negative eigenvalues
+of the congruent U₂ᴴU₁, drops by one and `crit` changes sign. A passage through ∞ (det U₂ = 0) also changes `nneg`,
+but not the sign of `crit`, which is evaluated only where `nneg` differs from the previous step's `nneg_prev`.
+"""
+@with_pool pool function step_zero_crossings(u::AbstractArray{ComplexF64,3}, u_prev::AbstractArray{ComplexF64,3}, nneg_prev::Int, direction::Int)
+    h = acquire!(pool, ComplexF64, size(u, 1), size(u, 2))
+    mul!(h, view(u, :, :, 2)', view(u, :, :, 1))
+    nneg = count_negative_eigenvalues!(Hermitian(h))
+    ncross = 0
+    if nneg != nneg_prev
+        crit, _ = compute_smallest_eigenvalue(u)
+        crit_prev, _ = compute_smallest_eigenvalue(u_prev)
+        if crit * crit_prev < 0
+            ncross = max(0, direction * (nneg_prev - nneg))
+        end
+    end
+    return ncross, nneg
+end
+
+"""
+    crossings_beyond_principal(P12, u_s, u_e, direction) -> Int
+
+Zero crossings of a solution in a chunk beyond those of the chunk's principal solution (U₁ = 0 at its start): the
+negative eigenvalues of `direction`·herm(X_sᴴ P₁₂⁻¹ X_e), a Morse index split exact for F̄ > 0. `u_s` and `u_e` hold
+the solution at the chunk's integration start and end in one column basis, X are their U₁ blocks, and `P12` is the
+U₁ block of the principal solution at the end. Each column is first divided by the norm of its `u_s` column, as their
+spread near the axis would otherwise turn the small eigenvalues into sign noise.
+"""
+function crossings_beyond_principal(P12::AbstractMatrix{ComplexF64}, u_s::AbstractArray{ComplexF64,3}, u_e::AbstractArray{ComplexF64,3}, direction::Int)
+    colnorms = [norm(view(u_s, :, j, :)) for j in axes(u_s, 2)]'
+    X_s = u_s[:, :, 1] ./ colnorms
+    X_e = u_e[:, :, 1] ./ colnorms
+    return count_negative_eigenvalues!(hermitianpart!(direction .* (X_s' * (P12 \ X_e))))
+end
+
+"""
+    count_negative_eigenvalues!(H) -> Int
+
+Number of negative eigenvalues of the Hermitian `H`, from its Bunch–Kaufman LDLᴴ factorization (overwrites `H`): a
+1×1 pivot counts by its sign, a 2×2 pivot block holds exactly one. Signs are taken as computed, so unlike `inertia`'s
+relative zero tolerance this keeps the small eigenvalues of a graded `H`.
+"""
+function count_negative_eigenvalues!(H::Hermitian{ComplexF64})
+    F = bunchkaufman!(H; check=false)
+    nneg, k = 0, 1
+    while k <= size(H, 1)
+        if F.ipiv[k] < 0  # 2×2 block in rows k, k+1
+            nneg += 1
+            k += 2
+        else
+            nneg += real(F.LD[k, k]) < 0
+            k += 1
+        end
+    end
+    return nneg
 end
