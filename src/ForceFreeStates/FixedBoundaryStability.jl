@@ -42,11 +42,12 @@ end
 Check if the critical eigenvalue (`crit`), i.e. the smallest eigenvalue of W⁻¹, changed
 signs between a given integration step `istep` and the previous step. We first compute
 `crit` at the current step, writing the result to the `crit_store` array, then compare
-with the previous step to see if it changed signs. If so, we perform additional checks
-to ensure the crossing is physical and not just numerical noise, and if so, we return
-that a zero_crossing occurred, indicating the presence of a fixed-boundary instability.
-This performs the same function as `ode_output_monitor` in the Fortran code, except we
-can do it post-integration rather than during and don't directly handle file outputs here.
+with the previous step to see if it changed signs. If so, it is a zero crossing, indicating
+a fixed-boundary instability, only if the number of negative eigenvalues of W⁻¹ also dropped:
+with F̄ > 0 a crossing raises an eigenvalue through 0, while a switch of the smallest
+eigenvalue or a passage through ∞ does not. This performs the same function as
+`ode_output_monitor` in the Fortran code, which instead checks an interpolated midpoint, except
+we can do it post-integration rather than during and don't directly handle file outputs here.
 
 ### Arguments
 
@@ -73,17 +74,10 @@ can do it post-integration rather than during and don't directly handle file out
     # Check for zero crossing via change in sign of crit between current and previous step
     zero_cross = false
     if istep > first_step && odet.crit_store[istep] * odet.crit_store[istep-1] < 0
-        crit = odet.crit_store[istep]
-        crit_prev = odet.crit_store[istep-1]
-        # Ensure the zero crossing is physical and not just numerical noise
-        fac = crit / (crit - crit_prev)
-        psi_mid = psi - fac * (psi - odet.psi_store[istep-1])
-        u_mid = u .- fac .* (u .- @view(odet.u_store[:, :, :, istep-1]))
-        dVdpsi = profiles.dVdpsi_spline(psi_mid; hint=odet.spline_hint)
-        crit_mid_val, _ = compute_smallest_eigenvalue(u_mid)
-        crit_mid = crit_mid_val * dVdpsi^2
-        if (crit_mid - crit) * (crit_mid - crit_prev) < 0 && abs(crit_mid) < 0.5 * min(abs(crit), abs(crit_prev))
+        if count_negative_wp_inverse(u) < count_negative_wp_inverse(@view odet.u_store[:, :, :, istep-1])
             zero_cross = true
+            crit, crit_prev = odet.crit_store[istep], odet.crit_store[istep-1]
+            psi_mid = psi - crit / (crit - crit_prev) * (psi - odet.psi_store[istep-1])
             @info "Zero crossing detected at ψ = $(@sprintf("%.3f", psi_mid))"
         end
     end
@@ -155,10 +149,8 @@ F̄ > 0 every crossing moves an eigenvalue of W⁻¹ upward in ψ through 0, so 
 of the congruent U₂ᴴU₁, drops by one and `crit` changes sign. A passage through ∞ (det U₂ = 0) also changes `nneg`,
 but not the sign of `crit`, which is evaluated only where `nneg` differs from the previous step's `nneg_prev`.
 """
-@with_pool pool function step_zero_crossings(u::AbstractArray{ComplexF64,3}, u_prev::AbstractArray{ComplexF64,3}, nneg_prev::Int, direction::Int)
-    h = acquire!(pool, ComplexF64, size(u, 1), size(u, 2))
-    mul!(h, view(u, :, :, 2)', view(u, :, :, 1))
-    nneg = count_negative_eigenvalues!(Hermitian(h))
+function step_zero_crossings(u::AbstractArray{ComplexF64,3}, u_prev::AbstractArray{ComplexF64,3}, nneg_prev::Int, direction::Int)
+    nneg = count_negative_wp_inverse(u)
     ncross = 0
     if nneg != nneg_prev
         crit, _ = compute_smallest_eigenvalue(u)
@@ -184,6 +176,17 @@ function crossings_beyond_principal(P12::AbstractMatrix{ComplexF64}, u_s::Abstra
     X_s = u_s[:, :, 1] ./ colnorms
     X_e = u_e[:, :, 1] ./ colnorms
     return count_negative_eigenvalues!(hermitianpart!(direction .* (X_s' * (P12 \ X_e))))
+end
+
+"""
+    count_negative_wp_inverse(u) -> Int
+
+Number of negative eigenvalues of W⁻¹ = U₁U₂⁻¹, from the congruent U₂ᴴU₁.
+"""
+@with_pool pool function count_negative_wp_inverse(u::AbstractArray{ComplexF64,3})
+    h = acquire!(pool, ComplexF64, size(u, 1), size(u, 2))
+    mul!(h, view(u, :, :, 2)', view(u, :, :, 1))
+    return count_negative_eigenvalues!(Hermitian(h))
 end
 
 """
