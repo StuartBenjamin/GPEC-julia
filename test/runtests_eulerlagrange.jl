@@ -434,7 +434,7 @@ end
         F = GeneralizedPerturbedEquilibrium.ForceFreeStates
         ex = joinpath(@__DIR__, "test_data", "regression_solovev_ideal_example")
         inputs = TOML.parsefile(joinpath(ex, "gpec.toml"))
-        equil = GeneralizedPerturbedEquilibrium.Equilibrium.PlasmaEquilibrium(
+        equil = GeneralizedPerturbedEquilibrium.Equilibrium.setup_equilibrium(
             GeneralizedPerturbedEquilibrium.Equilibrium.EquilibriumConfig(inputs["Equilibrium"], ex),
             GeneralizedPerturbedEquilibrium.Equilibrium.SolovevConfig(inputs["SOL_INPUT"]))
         # W⁻¹ = diag(a, b) per step: the smallest switches from a to b (crit +0.3 → -0.25, no crossing),
