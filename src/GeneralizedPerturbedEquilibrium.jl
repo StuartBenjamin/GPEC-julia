@@ -1664,6 +1664,7 @@ function write_outputs_to_HDF5(
         out_h5["$fwd/dxi_psidpsi"] = xi_solution !== nothing ? xi_solution.du_store : ComplexF64[]
         out_h5["$fwd/xi_s"] = xi_solution !== nothing ? xi_solution.xi_s_store : ComplexF64[]
         out_h5["$fwd/crit"] = diag !== nothing ? diag.crit_store : Float64[]
+        out_h5["$fwd/nzero"] = diag !== nothing ? diag.nzero : 0
 
         # Write edge stability scan data (only present when psiedge < psilim).
         # Generalized (W, N) pencil energies — power-normalized, Jacobian-invariant; these are

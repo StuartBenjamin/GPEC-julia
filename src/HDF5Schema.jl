@@ -187,6 +187,7 @@ const MAIN_H5_ANNOTATIONS = [
             attach=(3 => "ForceFreeStates/Solutions/ForwardIntegration/psi",)),
     "ForceFreeStates/Solutions/ForwardIntegration/crit" =>
         (; long_name="DCON zero-crossing criterion at saved snapshots", dims=("psi",), attach=(1 => "ForceFreeStates/Solutions/ForwardIntegration/psi",)),
+    "ForceFreeStates/Solutions/ForwardIntegration/nzero" => (; long_name="fixed-boundary zero crossings of the axis solution (DCON nzero; > 0 is unstable)"),
     # --- ForceFreeStates/EdgeScan/ (power-normalized (W, N) pencil energies) ---
     "ForceFreeStates/EdgeScan/psi" => (; long_name="normalized poloidal flux ψ_N of the edge truncation scan", scale="psi"),
     "ForceFreeStates/EdgeScan/q" => (; long_name="safety factor at scan points", dims=("psi",), attach=(1 => "ForceFreeStates/EdgeScan/psi",)),

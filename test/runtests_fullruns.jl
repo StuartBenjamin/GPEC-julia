@@ -51,6 +51,7 @@ using TOML
             # Per-stage wall-clock records (informational, not regression quantities).
             @test haskey(h5, "Info/Runtimes/total") && read(h5["Info/Runtimes/total"]) > 0
             @test haskey(h5, "Info/Runtimes/force_free_states")
+            @test read(h5["ForceFreeStates/Solutions/ForwardIntegration/nzero"]) >= 0
             # Kinetic runs never populate the asymptotic ca coefficients; the writer must
             # emit deterministic zero-extent sentinels, not uninitialized memory.
             @test isempty(read(h5["SingularSurfaces/ca_left"]))
