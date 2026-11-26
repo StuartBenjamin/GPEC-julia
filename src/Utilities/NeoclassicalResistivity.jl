@@ -4,7 +4,7 @@
 #   - eq 18b (nu*_e):         Sauter et al. 1999, Eq. (18b)
 #   - eq 13 (F_33 Sauter):    Sauter et al. 1999, Eqs. (13a)-(13b)
 #   - eq 17 (F_33 Redl):      Redl et al. 2021, Eqs. (17)-(18)
-#   - f_t (Lin-Liu & Miller): Phys. Plasmas 2, 1666 (1995), Eq. (6)
+#   - f_t (Lin-Liu & Miller): Phys. Plasmas 2, 1666 (1995)
 #   - NRL Coulomb log:        NRL Plasma Formulary 2009
 
 """
@@ -27,7 +27,7 @@ physics when the same `NeoResistivityModel` is selected.
 | `eta_spitzer`          | Sauter 18a Spitzer resistivity [Ω·m]                   |
 | `tau_ee_spitzer_harm`  | electron-electron collision time τ_ee [s]              |
 | `eta_spitzer_harm`     | Fitzpatrick/TJ Spitzer-Härm resistivity 1/σ_∥ [Ω·m]    |
-| `trapped_fraction`     | Lin-Liu & Miller 1995 f_t from ⟨B⟩, ⟨B²⟩, B_min, B_max |
+| `trapped_fraction`     | Lin-Liu & Miller 1995 f_t = 0.75 f_tu + 0.25 f_tl      |
 | `trapped_fraction_eps` | simple ε-only f_t fallback                             |
 | `nu_star_e`            | Sauter 18b electron collisionality                     |
 | `eta_neoclassical`     | dispatched: Spitzer(-Härm) or F_33 · Spitzer           |
@@ -176,24 +176,27 @@ end
 # Trapped fraction
 
 """
-    trapped_fraction(avg_B, avg_Bsq, B_min, B_max) -> Float64
+    trapped_fraction(avg_B, avg_Bsq, B_max, avg_fh) -> Float64
 
-Lin-Liu & Miller 1995, Phys. Plasmas **2**, 1666, Eq. (6):
+Lin-Liu & Miller 1995, Phys. Plasmas **2**, 1666: f_t ≈ 0.75 f_tu + 0.25 f_tl, the weighted upper and lower
+bounds, with h = B / B_max and f(h) = h⁻² (1 − √(1 − h) · (1 + h/2)):
 
 ```
-f_t = 1 − ⟨B⟩² / ⟨B²⟩ · (1 − √(1 − h) · (1 + h/2)),   h = B_min / B_max
+f_tu = 1 − ⟨h²⟩ / ⟨h⟩² · (1 − √(1 − ⟨h⟩) · (1 + ⟨h⟩/2))
+f_tl = 1 − ⟨h²⟩ · ⟨f(h)⟩
 ```
 
-Arguments are flux-surface averages and extrema of |B| on the surface.
+Arguments are the flux-surface averages ⟨B⟩, ⟨B²⟩ and ⟨f(h)⟩ and the maximum of |B| on the surface.
 """
 function trapped_fraction(avg_B::Real, avg_Bsq::Real,
-    B_min::Real, B_max::Real)
+    B_max::Real, avg_fh::Real)
     B_max > 0 || throw(ArgumentError("trapped_fraction: B_max must be > 0"))
     avg_Bsq > 0 || throw(ArgumentError("trapped_fraction: avg_Bsq must be > 0"))
-    h = clamp(B_min / B_max, 0.0, 1.0)
-    factor = 1.0 - sqrt(1.0 - h) * (1.0 + 0.5 * h)
-    ft = 1.0 - (avg_B^2 / avg_Bsq) * factor
-    return clamp(ft, 0.0, 1.0)
+    h = clamp(avg_B / B_max, 0.0, 1.0)
+    h2 = avg_Bsq / B_max^2
+    ftu = 1.0 - h2 / h^2 * (1.0 - sqrt(1.0 - h) * (1.0 + 0.5 * h))
+    ftl = 1.0 - h2 * avg_fh
+    return clamp(0.75 * ftu + 0.25 * ftl, 0.0, 1.0)
 end
 
 """

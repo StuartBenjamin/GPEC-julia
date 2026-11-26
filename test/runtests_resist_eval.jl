@@ -42,6 +42,23 @@
         end
     end
 
+    @testset "trapped_fraction: Lin-Liu & Miller vs the exact f_t" begin
+        # |B| = 1/(1 + ε cos θ) with a uniform θ weight; exact f_t = 1 − ¾⟨h²⟩∫₀¹ x dx / ⟨√(1 − x h)⟩, h = B/B_max.
+        trapped_fraction = Utilities.NeoclassicalResistivity.trapped_fraction
+        avg(v) = sum(v) / length(v)
+        fh(h) = (1 - sqrt(1 - h) * (1 + h / 2)) / h^2
+        @test trapped_fraction(1.0, 1.0, 1.0, fh(1.0)) == 0.0   # uniform |B|: no trapped particles
+        theta = range(0, 2π; length=2001)[1:end-1]
+        x = range(0, 1; length=4001)
+        for eps in (0.05, 0.2, 0.4)
+            B = 1 ./ (1 .+ eps .* cos.(theta))
+            h = B ./ maximum(B)
+            g = [xi / avg(sqrt.(1 .- xi .* h)) for xi in x]
+            exact = 1 - 0.75 * avg(h .^ 2) * (sum(g) - (g[1] + g[end]) / 2) * step(x)
+            @test trapped_fraction(avg(B), avg(B .^ 2), maximum(B), avg(fh.(h))) ≈ exact rtol = 5e-3
+        end
+    end
+
     @testset "resist_geometry vs ballooning D_I: D_I = E + F + H − ¼" begin
         # Independent D_I reference from the ballooning coefficient system:
         # det(d0bar) is the Mercier interchange D_I that the local-stability

@@ -4,6 +4,7 @@
 # θ-integrands, each weighted by `jac / v1` before integration (1-6 follow Fortran `resist_eval`):
 #   1: B² / |∇ψ|²   2: 1 / |∇ψ|²   3: 1 / B²   4: 1 / (B² · |∇ψ|²)   5: B²   6: |∇ψ|² / B²
 #   7: B (for the Lin-Liu & Miller 1995 trapped fraction)   8: |∇ψ|² (toroidal critical-Δ, ⟨|∇V|²⟩ = v1²⟨|∇ψ_N|²⟩)
+#   9: f(B / B_max) of `trapped_fraction`, filled after the loop that finds B_max
 
 """
     ResistGeometry
@@ -86,11 +87,11 @@ function resist_geometry(equil::Equilibrium.PlasmaEquilibrium,
     v2 = profiles.dVdpsi_deriv(psi_f)
     q = profiles.q_spline(psi_f)
 
-    # θ-integrands (see file header) plus running extrema of B and R for f_trap and ε.
+    # θ-integrands (see file header) plus B, its maximum and the R extrema for f_trap and ε.
     ntheta = length(equil.rzphi_ys)
-    ff = zeros(Float64, ntheta, 8)
+    ff = zeros(Float64, ntheta, 9)
+    B = zeros(Float64, ntheta)
     B_max = -Inf
-    B_min = Inf
     R_max = -Inf
     R_min = Inf
     for itheta in 1:ntheta
@@ -114,8 +115,8 @@ function resist_geometry(equil::Equilibrium.PlasmaEquilibrium,
         dpsisq = (twopi * r)^2 * (v21^2 + v22^2)
 
         B_here = sqrt(bsq)
+        B[itheta] = B_here
         B_max = max(B_max, B_here)
-        B_min = min(B_min, B_here)
         R_max = max(R_max, r)
         R_min = min(R_min, r)
 
@@ -127,8 +128,11 @@ function resist_geometry(equil::Equilibrium.PlasmaEquilibrium,
         ff[itheta, 6] = dpsisq / bsq
         ff[itheta, 7] = B_here
         ff[itheta, 8] = dpsisq
-        @views ff[itheta, :] .*= jac / v1
+        @views ff[itheta, 1:8] .*= jac / v1
     end
+    # f(h) = h⁻²(1 − √(1 − h)(1 + h/2)), h = B/B_max, with the same jac/v1 weight (= ff[:, 7] / B)
+    h = B ./ B_max
+    @views ff[:, 9] .= (1 .- sqrt.(1 .- h) .* (1 .+ h ./ 2)) ./ h .^ 2 .* ff[:, 7] ./ B
     # Snap the repeated endpoint exactly equal to the start
     @views ff[end, :] .= ff[1, :]
 
@@ -138,7 +142,7 @@ function resist_geometry(equil::Equilibrium.PlasmaEquilibrium,
     avg_B = avg[7]
     R_major = 0.5 * (R_max + R_min)
     eps_local = R_major > 0 ? 0.5 * (R_max - R_min) / R_major : 0.0
-    f_trap = Utilities.NeoclassicalResistivity.trapped_fraction(avg_B, avg[5], B_min, B_max)
+    f_trap = Utilities.NeoclassicalResistivity.trapped_fraction(avg_B, avg[5], B_max, avg[9])
 
     # GGJ coefficients (Fortran RDCON resist_eval)
     E_coef = p1 * v1 / (q1 * chi1^2)^2 * avg[1] *
