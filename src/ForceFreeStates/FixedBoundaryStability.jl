@@ -12,10 +12,8 @@ function evaluate_stability_criterion!(odet::OdeState, profiles::Equilibrium.Pro
     nonherm_count = 0
 
     for istep in 1:odet.step
-        zero_cross, nonherm = check_for_zero_crossings!(odet, profiles, istep; first_step)
-        if zero_cross
-            nzero += 1
-        end
+        ncross, nonherm = check_for_zero_crossings!(odet, profiles, istep; first_step)
+        nzero += ncross
         if nonherm
             nonherm_count += 1
         end
@@ -29,17 +27,16 @@ function evaluate_stability_criterion!(odet::OdeState, profiles::Equilibrium.Pro
 end
 
 """
-    check_for_zero_crossings!(odet, profiles, istep; first_step=1) -> zero_cross, nonherm
+    check_for_zero_crossings!(odet, profiles, istep; first_step=1) -> ncross, nonherm
 
 Compute `crit` (smallest-magnitude eigenvalue of W⁻¹, scaled by (dV/dψ)²) at step `istep` into
-`odet.crit_store`, and report whether it changed sign since the previous step (never for steps up to
-`first_step`). A sign change counts only if the number of negative eigenvalues of W⁻¹ also dropped: with
-F̄ > 0 a crossing raises an eigenvalue through 0, while a switch of the smallest eigenvalue or a passage
-through ∞ does not.
+`odet.crit_store`, and count the zero crossings since the previous step (none for steps up to `first_step`):
+where the number of negative eigenvalues of W⁻¹ changed, `crossings_through_zero` tells the crossings from the
+passages through ∞.
 
 ### Returns
 
-  - `zero_cross::Bool`: True if a physical zero crossing was detected
+  - `ncross::Int`: Zero crossings since the previous step
   - `nonherm::Bool`: True if W⁻¹ was non-Hermitian beyond tolerance
 """
 @with_pool pool function check_for_zero_crossings!(odet::OdeState, profiles::Equilibrium.ProfileSplines, istep::Int; first_step::Int=1)
@@ -51,16 +48,15 @@ through ∞ does not.
     crit_val, nonherm = compute_smallest_eigenvalue(u)
     odet.crit_store[istep] = crit_val * dVdpsi^2
 
-    zero_cross = false
-    if istep > first_step && odet.crit_store[istep] * odet.crit_store[istep-1] < 0
-        if count_negative_wp_inverse(u) < count_negative_wp_inverse(@view odet.u_store[:, :, :, istep-1])
-            zero_cross = true
-            crit, crit_prev = odet.crit_store[istep], odet.crit_store[istep-1]
-            psi_mid = psi - crit / (crit - crit_prev) * (psi - odet.psi_store[istep-1])
-            @info "Zero crossing detected at ψ = $(@sprintf("%.3f", psi_mid))"
+    ncross = 0
+    if istep > first_step
+        u_prev = @view odet.u_store[:, :, :, istep-1]
+        if count_negative_wp_inverse(u) != count_negative_wp_inverse(u_prev)
+            ncross = crossings_through_zero(u_prev, u)
+            ncross != 0 && @info "Zero crossing detected at ψ = $(@sprintf("%.3f", psi))"
         end
     end
-    return zero_cross, nonherm
+    return ncross, nonherm
 end
 
 """
@@ -107,20 +103,36 @@ end
 
 Zero crossings of a solution over one ODE step from `u_prev` to `u`, taken in ψ direction `direction` (±1). With
 F̄ > 0 every crossing moves an eigenvalue of W⁻¹ upward in ψ through 0, so `nneg`, the number of negative eigenvalues
-of the congruent U₂ᴴU₁, drops by one and `crit` changes sign. A passage through ∞ (det U₂ = 0) also changes `nneg`,
-but not the sign of `crit`, which is evaluated only where `nneg` differs from the previous step's `nneg_prev`.
+of the congruent U₂ᴴU₁, drops by one. A passage through ∞ (det U₂ = 0) also changes `nneg`; where `nneg` differs from
+the previous step's `nneg_prev`, `crossings_through_zero` tells the two apart.
 """
 function step_zero_crossings(u::AbstractArray{ComplexF64,3}, u_prev::AbstractArray{ComplexF64,3}, nneg_prev::Int, direction::Int)
     nneg = count_negative_wp_inverse(u)
-    ncross = 0
-    if nneg != nneg_prev
-        crit, _ = compute_smallest_eigenvalue(u)
-        crit_prev, _ = compute_smallest_eigenvalue(u_prev)
-        if crit * crit_prev < 0
-            ncross = max(0, direction * (nneg_prev - nneg))
-        end
-    end
+    ncross = nneg == nneg_prev ? 0 : direction * crossings_through_zero(u_prev, u)
     return ncross, nneg
+end
+
+"""
+    crossings_through_zero(u_prev, u) -> Int
+
+Net number of eigenvalues of W⁻¹ that pass upward through 0 from `u_prev` to `u` (a downward one counts −1). Each
+eigenvalue e sits on the circle at 2 atan(e), where 0 and ±∞ are opposite points. The two sorted sets are matched by
+the cyclic shift that moves them least, and a matched pair counts if its shorter arc passes through 0; a passage
+through ±∞ takes the arc through π. Unlike the sign of the smallest-|e| eigenvalue, this does not miss a crossing
+while another eigenvalue stays closer to 0.
+"""
+function crossings_through_zero(u_prev::AbstractArray{ComplexF64,3}, u::AbstractArray{ComplexF64,3})
+    θ_prev = 2 .* atan.(eigvals!(hermitianpart!(u_prev[:, :, 1] / u_prev[:, :, 2])))
+    θ = 2 .* atan.(eigvals!(hermitianpart!(u[:, :, 1] / u[:, :, 2])))
+    n = length(θ)
+    arc(a, b) = mod(b - a + π, 2π) - π  # signed shorter arc from a to b
+    kmax = abs(count(<(0), θ) - count(<(0), θ_prev)) + 1
+    k = argmin(k -> sum(i -> abs(arc(θ_prev[mod1(i - k, n)], θ[i])), 1:n), -kmax:kmax)
+    return sum(1:n) do i
+        a = θ_prev[mod1(i - k, n)]
+        b = a + arc(a, θ[i])
+        (a < 0 <= b) - (b < 0 <= a)
+    end
 end
 
 """

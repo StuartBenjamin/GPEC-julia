@@ -111,6 +111,11 @@ end
         @test FFS.crossings_beyond_principal(P12, rebase(state(0.0)), rebase(state(L)), 1) == 1
         # Integrated backward from L, where the backward propagator's P₁₂ is -sin(ωL)
         @test FFS.crossings_beyond_principal(-P12, state(L), state(0.0), -1) == 1
+        # W⁻¹ = diag(-0.1 → 0.05, 1e-5): a crossing while another eigenvalue stays nearer 0 (the smallest-|e| sign
+        # does not change); W⁻¹ = diag(1e4 → -1e4, 1e8): a passage through ∞ beside a larger eigenvalue
+        wp(d) = cat(diagm(ComplexF64.(d)), Matrix{ComplexF64}(I, 2, 2); dims=3)
+        @test FFS.step_zero_crossings(wp([0.05, 1e-5]), wp([-0.1, 1e-5]), 1, 1) == (1, 0)
+        @test FFS.step_zero_crossings(wp([-1e4, 1e8]), wp([1e4, 1e8]), 0, 1) == (0, 1)
         # A 2×2 Bunch–Kaufman pivot block holds one negative eigenvalue
         @test FFS.count_negative_eigenvalues!(Hermitian(ComplexF64[0 1; 1 0])) == 1
     end

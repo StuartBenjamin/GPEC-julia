@@ -307,7 +307,8 @@ function integrate_propagator_chunk!(
     for i in 1:N
         u_lower[i, i, 2] = 1
     end
-    u_prev, nneg_prev = copy(u_lower), Ref(0)
+    # U₁ = 0: W⁻¹'s eigenvalues leave 0 in the direction of integration, which is not a crossing
+    u_prev, nneg_prev = copy(u_lower), Ref(chunk.direction == 1 ? 0 : N)
     prop.principal_nzero = 0
     function count_principal_crossings!(integrator)
         refresh_column_abstol!(integrator)

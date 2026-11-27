@@ -435,7 +435,7 @@ end
         odet = F.OdeState(2, 4, 1, 1)
         odet.step = 3
         odet.psi_store[1:3] = [0.2, 0.3, 0.4]
-        for (i, w) in enumerate(([0.3, -0.5], [0.6, -0.25], [0.6, 5.0]))
+        for (i, w) in enumerate(([0.3, -0.5], [0.6, -0.25], [0.6, 0.9]))
             odet.u_store[:, :, 1, i] = diagm(ComplexF64.(w))
             odet.u_store[:, :, 2, i] = I(2)
         end
